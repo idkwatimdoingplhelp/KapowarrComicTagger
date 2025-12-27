@@ -32,7 +32,9 @@ COPY . .
 # Set permissions
 RUN \
     chown -R abc:abc /app \
-    && chmod -R 755 /app
+    && chmod -R 755 /app \
+    && mkdir -p /root/ \
+    && chmod 777 /root/
 
 # Expose port and set environment
 EXPOSE 5656
