@@ -26,7 +26,7 @@ from backend.features.download_queue import DownloadHandler
 from backend.features.search import auto_search
 from backend.implementations.conversion import mass_convert
 from backend.implementations.naming import mass_rename
-from backend.implementations.volumes import Volume, refresh_and_scan
+from backend.implementations.volumes import Issue, Volume, refresh_and_scan
 from backend.internals.db import close_db, get_db
 from backend.internals.server import (TaskAddedEvent, TaskEndedEvent,
                                       TaskStatusEvent, WebSocket)
@@ -223,6 +223,93 @@ class MassConvertIssue(Task):
 
         return
 
+
+class AddMetaDataForIssue(Task):
+    "Add ComicRack metadata to files in an issue"
+
+    stop = False
+    message = ''
+    action = 'add_metadata_issue'
+    display_title = 'Add Metadata'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> int:
+        return self._issue_id
+
+    def __init__(
+        self,
+        volume_id: int,
+        issue_id: int,
+        filepath_filter: List[str] = []
+    ) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to perform the task.
+            issue_id (int): The ID of the issue for which to perform the task.
+            filepath_filter (List[str], optional): Only rename files in this
+            list.
+                Defaults to [].
+        """
+        self._volume_id = volume_id
+        self._issue_id = issue_id
+        self.filepath_filter = filepath_filter
+        return
+
+    def run(self) -> None:
+
+        volume_title = Volume(self._volume_id).vd.title
+        issue_number = Issue(self._issue_id).get_data().issue_number
+        issue_path = Issue(self._issue_id).get_data().files[0]["filepath"]
+        cv_id = Issue(self._issue_id).get_data().comicvine_id
+        self.message = f'Adding Metadata to {volume_title} #{issue_number}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        cmksettngs = settings.ComicTaggerSettings(None)
+        cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
+        cmksettngs.save()
+
+        opts = argparse.Namespace(
+            file_list=[issue_path],
+            issue_id=cv_id,
+            save=True,
+            online=True,
+            overwrite=True,
+            auto_imprint=False,
+            dryrun=False,
+            delete=False,
+            rename=False,
+            copy=None,
+            no_overwrite=False,
+            abort_on_low_confidence=True,
+            wait_on_cv_rate_limit=False,
+            print=False,
+            terse=False,
+            raw=False,
+            type=[1],  # CIX (ComicRack)
+            metadata=GenericMetadata(),
+            parse_filename=True,
+            split_words=False,
+            export_to_zip=False,
+            delete_after_zip_export=False,
+            abort_on_conflict=False,
+            interactive=False,
+            rename_move_dir=False,
+            show_save_summary=True,
+            assume_issue_one=True,
+            verbose=False
+        )
+        cli(opts, cmksettngs)
+
+        self.message = f'finishsed updating metadata on {volume_title}  #{
+            issue_number} '
+        WebSocket().emit(TaskStatusEvent(self.message))
+        return
 # =====================
 # Volume tasks
 # =====================
@@ -406,46 +493,29 @@ class MassConvertVolume(Task):
 
 
 class AddMetadata(Task):
-
     "Add ComicRack metadata to files in a volume"
 
     stop = False
-
     message = ''
-
     action = 'add_metadata'
-
     display_title = 'Add Metadata'
-
     category = ''
 
     @property
     def volume_id(self) -> int:
-
         return self._volume_id
 
     @property
     def issue_id(self) -> None:
-
         return None
 
     def __init__(self, volume_id: int) -> None:
         """Create the task
 
-
-
-
-
         Args:
-
-
             volume_id (int): The ID of the volume for which to add metadata
-
-
         """
-
         self._volume_id = volume_id
-
         return
 
     def run(self) -> None:
@@ -456,9 +526,10 @@ class AddMetadata(Task):
         all_paths = []
 
         for i in issues:
-            cv_id_list.append(i.comicvine_id)
-            path = i.files[0]["filepath"]
-            all_paths.append(path)
+            if not (len(i.files) == 0):
+                cv_id_list.append(i.comicvine_id)
+                path = i.files[0]["filepath"]
+                all_paths.append(path)
 
         LOGGER.info(f'Started adding metadata to {volume_title}')
         self.message = f'Started adding metadata to {volume_title}'
@@ -502,17 +573,14 @@ class AddMetadata(Task):
                 show_save_summary=True,
                 assume_issue_one=True,
                 verbose=False
-
-
             )
-
             cli(opts, cmksettngs)
+
             self.message = f'finishsed updating metadata on {issues[l].title}'
             WebSocket().emit(TaskStatusEvent(self.message))
 
         LOGGER.info(f'Finished adding metadata to {volume_title}')
         self.message = f'finishsed updating metadata on {volume_title}'
-
         WebSocket().emit(TaskStatusEvent(self.message))
 
         return

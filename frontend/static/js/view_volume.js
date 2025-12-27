@@ -62,6 +62,7 @@ class IssueEntry {
 		this.auto_search = this.entry.querySelector('.action-column :nth-child(1)');
 		this.manual_search = this.entry.querySelector('.action-column :nth-child(2)');
 		this.convert = this.entry.querySelector('.action-column :nth-child(3)');
+		this.addMetaDataForIssue = this.entry.querySelector('.action-column :nth-child(4)')
 	};
 
 	setMonitorIcon() {
@@ -144,6 +145,7 @@ function fillTable(issues, api_key) {
 		inst.auto_search.onclick = e => autosearchIssue(obj.id, api_key);
 		inst.manual_search.onclick = e => showManualSearch(api_key, obj.id);
 		inst.convert.onclick = e => showConvert(api_key, obj.id);
+		inst.addMetaDataForIssue.onclick = e => addMetaDataForIssue(obj.id, api_key);
 	};
 };
 
@@ -302,6 +304,19 @@ function autosearchIssue(issue_id, api_key) {
 
 	sendAPI('POST', '/system/tasks', api_key, {}, {
 		cmd: 'auto_search_issue',
+		volume_id: volume_id,
+		issue_id: issue_id
+	});
+};
+
+function addMetaDataForIssue(issue_id, api_key) {
+	const button_info = task_to_button[`add_metadata_issue#${volume_id}#${issue_id}`];
+	const icon = button_info.button.querySelector('img');
+	icon.src = button_info.loading_icon;
+	icon.classList.add('spinning');
+
+	sendAPI('POST', '/system/tasks', api_key, {}, {
+		cmd: 'add_metadata_issue',
 		volume_id: volume_id,
 		issue_id: issue_id
 	});

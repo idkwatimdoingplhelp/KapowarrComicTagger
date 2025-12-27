@@ -133,13 +133,18 @@ function mapButtons(id) {
 
 		document.querySelectorAll('.issue-entry').forEach(entry => {
 			task_to_button[`auto_search_issue#${id}#${entry.dataset.id}`] = {
-				'button': entry.querySelector('.action-column > button:first-child'),
+				'button': entry.querySelector('.action-column > button:nth-child(1)'),
 				'icon': `${url_base}/static/img/search.svg`,
 				'loading_icon': `${url_base}/static/img/loading.svg`
 			};
 			task_to_button[`mass_convert_issue#${id}#${entry.dataset.id}`] = {
-				'button': entry.querySelector('.action-column > button:last-child'),
+				'button': entry.querySelector('.action-column > button:nth-child(3)'),
 				'icon': `${url_base}/static/img/convert.svg`,
+				'loading_icon': `${url_base}/static/img/loading.svg`
+			};
+			task_to_button[`add_metadata_issue#${id}#${entry.dataset.id}`] = {
+				'button': entry.querySelector('.action-column > button:nth-child(4)'),
+				'icon': `${url_base}/static/img/add_meta.svg`,
 				'loading_icon': `${url_base}/static/img/loading.svg`
 			};
 		});
