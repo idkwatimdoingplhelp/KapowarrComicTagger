@@ -969,6 +969,28 @@ def api_issue_manual_search(id: int):
     return return_api(result)
 
 
+@api.route('/volumes/<int:id>/add_metadata', methods=['POST'])
+@error_handler
+@auth
+def api_volume_add_metadata(id: int):
+    Library.get_volume(id)
+    task_handler = TaskHandler()
+
+    task: Union[Type[Task], None] = task_library.get('add_metadata')
+    if not task:
+        raise TaskNotFound('add_metadata')
+
+    task_instance = task(volume_id=id)
+    task_id = task_handler.add(task_instance)
+    return return_api(
+        {
+            'queued': True,
+            'task_id': task_id
+        },
+        code=202
+    )
+
+
 @api.route('/issues/<int:id>/download', methods=['POST'])
 @error_handler
 @auth

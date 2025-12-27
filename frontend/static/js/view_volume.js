@@ -36,7 +36,8 @@ const ViewEls = {
 		convert: document.querySelector('#convert-button'),
 		files: document.querySelector('#files-button'),
 		edit: document.querySelector('#edit-button'),
-		delete: document.querySelector('#delete-button')
+		delete: document.querySelector('#delete-button'),
+		add_metadata: document.querySelector('#add-metadata')
 	},
 	issues_list: document.querySelector('#issues-list')
 };
@@ -431,6 +432,19 @@ function blockManualSearch(
 	});
 };
 
+function showAddMetadata(api_key) {
+	console.log('Add Metadata button clicked for volume:', volume_id);
+	// Send request to backend
+	sendAPI('POST', `/volumes/${volume_id}/add_metadata`, api_key, {})
+	.then(response => response.json())
+	.then(json => {
+		console.log('Add Metadata response:', json);
+	})
+	.catch(error => {
+		console.error('Error queueing metadata task:', error);
+	});
+};
+
 //
 // Renaming
 //
@@ -754,6 +768,7 @@ usingApiKey()
 	ViewEls.tool_bar.rename.onclick = e => showRename(api_key);
 	ViewEls.tool_bar.convert.onclick = e => showConvert(api_key);
 	ViewEls.tool_bar.edit.onclick = e => showEdit(api_key);
+	ViewEls.tool_bar.add_metadata.onclick = e => showAddMetadata(api_key);
 
 	document.querySelector('#submit-rename').onclick =
 		e => renameVolume(api_key, parseInt(e.target.dataset.issue_id) || null);

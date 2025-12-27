@@ -6,13 +6,18 @@ Background tasks and their handling
 
 from __future__ import annotations
 
+import argparse
 from abc import ABC, abstractmethod
 from threading import Thread, Timer
 from time import sleep, time
 from typing import Dict, List, Tuple, Type, Union
 
+from comicapi.genericmetadata import GenericMetadata
+from comictaggerlib import settings
+from comictaggerlib.cli import cli_mode as cli
 from flask import Flask
 
+import backend.internals.settings as settings_module
 from backend.base.custom_exceptions import (InvalidComicVineApiKey,
                                             TaskNotDeletable, TaskNotFound)
 from backend.base.helpers import Singleton, get_subclasses
@@ -399,6 +404,118 @@ class MassConvertVolume(Task):
 
         return
 
+
+class AddMetadata(Task):
+
+    "Add ComicRack metadata to files in a volume"
+
+    stop = False
+
+    message = ''
+
+    action = 'add_metadata'
+
+    display_title = 'Add Metadata'
+
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> None:
+
+        return None
+
+    def __init__(self, volume_id: int) -> None:
+        """Create the task
+
+
+
+
+
+        Args:
+
+
+            volume_id (int): The ID of the volume for which to add metadata
+
+
+        """
+
+        self._volume_id = volume_id
+
+        return
+
+    def run(self) -> None:
+
+        volume_title = Volume(self._volume_id).vd.title
+        issues = Volume(self._volume_id).get_issues()
+        cv_id_list = []
+        all_paths = []
+
+        for i in issues:
+            cv_id_list.append(i.comicvine_id)
+            path = i.files[0]["filepath"]
+            all_paths.append(path)
+
+        LOGGER.info(f'Started adding metadata to {volume_title}')
+        self.message = f'Started adding metadata to {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        cmksettngs = settings.ComicTaggerSettings(None)
+        cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
+        cmksettngs.save()
+
+        for l in range(len(all_paths)):
+
+            self.message = f'Updating metadata on {issues[l].title}'
+            WebSocket().emit(TaskStatusEvent(self.message))
+
+            opts = argparse.Namespace(
+                file_list=[all_paths[l]],
+                issue_id=cv_id_list[l],
+                save=True,
+                online=True,
+                overwrite=True,
+                auto_imprint=False,
+                dryrun=False,
+                delete=False,
+                rename=False,
+                copy=None,
+                no_overwrite=False,
+                abort_on_low_confidence=True,
+                wait_on_cv_rate_limit=False,
+                print=False,
+                terse=False,
+                raw=False,
+                type=[1],  # CIX (ComicRack)
+                metadata=GenericMetadata(),
+                parse_filename=True,
+                split_words=False,
+                export_to_zip=False,
+                delete_after_zip_export=False,
+                abort_on_conflict=False,
+                interactive=False,
+                rename_move_dir=False,
+                show_save_summary=True,
+                assume_issue_one=True,
+                verbose=False
+
+
+            )
+
+            cli(opts, cmksettngs)
+            self.message = f'finishsed updating metadata on {issues[l].title}'
+            WebSocket().emit(TaskStatusEvent(self.message))
+
+        LOGGER.info(f'Finished adding metadata to {volume_title}')
+        self.message = f'finishsed updating metadata on {volume_title}'
+
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        return
 # =====================
 # Library tasks
 # =====================
