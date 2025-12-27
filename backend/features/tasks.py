@@ -306,8 +306,7 @@ class AddMetaDataForIssue(Task):
         )
         cli(opts, cmksettngs)
 
-        self.message = f'finishsed updating metadata on {volume_title}  #{
-            issue_number} '
+        self.message = f'finishsed updating metadata on {volume_title}  #{issue_number} '
         WebSocket().emit(TaskStatusEvent(self.message))
         return
 # =====================
