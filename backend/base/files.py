@@ -4,18 +4,22 @@
 Handling folders, files and filenames.
 """
 
+import ctypes
 from collections import deque
-from os import listdir, makedirs, remove, scandir
+from ctypes import wintypes
+from datetime import datetime
+from os import chmod, listdir, makedirs, remove, scandir, utime
 from os.path import (abspath, basename, commonpath, dirname, isdir,
                      isfile, join, relpath, samefile, sep, splitext)
 from re import compile
-from shutil import copy2, copytree, move, rmtree
+from shutil import chown, copy2, copytree, move, rmtree
 from typing import Dict, Iterable, List, Sequence, Union
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from backend.base.definitions import CharConstants, Constants, FileConstants
+from backend.base.definitions import (CharConstants, Constants,
+                                      FileConstants, OSType)
 from backend.base.helpers import (check_filter, force_prefix,
-                                  force_suffix, run_rar)
+                                  force_suffix, get_os_type, run_rar)
 from backend.base.logging import LOGGER
 
 filepath_cleaner = compile(
@@ -40,6 +44,31 @@ def folder_path(*folders: str) -> str:
         str: The absolute filepath.
     """
     return join(dirname(dirname(dirname(abspath(__file__)))), *folders)
+
+
+def list_folders(base_folder: str) -> List[str]:
+    """List all folders in a base folder recursively with absolute paths. Hidden
+    folders (folders starting with `.`) are ignored.
+
+    Args:
+        base_folder (str): The base folder to list sub-folders for.
+
+    Returns:
+        List[str]: The list of folders that are recursively in the base folder.
+            Intermediary folders are included (e.g. if `/foo/bar/quux` is in the
+            list, then so is `/foo/bar`). The base folder itself is not included.
+    """
+    folders: List[str] = []
+    to_dos = deque((base_folder,))
+
+    while to_dos:
+        to_do = to_dos.popleft()
+        for f in scandir(to_do):
+            if f.is_dir() and not f.name.startswith('.'):
+                folders.append(f.path)
+                to_dos.append(f.path)
+
+    return folders
 
 
 def list_files(folder: str, ext: Iterable[str] = []) -> List[str]:
@@ -488,6 +517,247 @@ def create_zip_archive(
     with ZipFile(zip_filename, "w", ZIP_DEFLATED) as zip:
         for file in list_files(base_folder):
             zip.write(file, relpath(file, base_folder))
+    return
+
+
+# region Altering
+def __set_windows_times(filepath: str, timestamp: float) -> None:
+    try:
+        FILE_WRITE_ATTRIBUTES = 0x0100
+        OPEN_EXISTING = 3
+        FILE_SHARE_READ = 0x00000001
+        FILE_SHARE_WRITE = 0x00000002
+        FILE_SHARE_DELETE = 0x00000004
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) # type: ignore
+
+        CreateFileW = kernel32.CreateFileW
+        CreateFileW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.LPVOID,
+            wintypes.DWORD,
+            wintypes.DWORD,
+            wintypes.HANDLE,
+        ]
+        CreateFileW.restype = wintypes.HANDLE
+
+        SetFileTime = kernel32.SetFileTime
+        SetFileTime.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        SetFileTime.restype = wintypes.BOOL
+
+        CloseHandle = kernel32.CloseHandle
+
+        handle = CreateFileW(
+            filepath,
+            FILE_WRITE_ATTRIBUTES,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            0,
+            None,
+        )
+
+        if handle == wintypes.HANDLE(-1).value:
+            return
+
+        # Windows FILETIME: 100 ns intervals since 1601-01-01
+        WINDOWS_EPOCH = 11644473600
+        intervals = int((timestamp + WINDOWS_EPOCH) * 10_000_000)
+
+        ft = wintypes.FILETIME(
+            intervals & 0xFFFFFFFF,
+            intervals >> 32,
+        )
+
+        # creation time + modification time
+        SetFileTime(handle, ctypes.byref(ft), None, ctypes.byref(ft))
+        CloseHandle(handle)
+
+    except Exception:
+        pass
+
+    return
+
+
+def __set_macos_times(filepath: str, timestamp: float) -> None:
+    try:
+        libc = ctypes.CDLL("libc.dylib", use_errno=True)
+
+        class Timespec(ctypes.Structure):
+            _fields_ = [("tv_sec", ctypes.c_long), ("tv_nsec", ctypes.c_long)]
+
+        class Attrlist(ctypes.Structure):
+            _fields_ = [
+                ("bitmapcount", ctypes.c_ushort),
+                ("reserved", ctypes.c_ushort),
+                ("commonattr", ctypes.c_uint),
+                ("volattr", ctypes.c_uint),
+                ("dirattr", ctypes.c_uint),
+                ("fileattr", ctypes.c_uint),
+                ("forkattr", ctypes.c_uint),
+            ]
+
+        ATTR_BIT_MAP_COUNT = 5
+        ATTR_CMN_CRTIME = 0x00000200
+
+        attrlist = Attrlist(
+            bitmapcount=ATTR_BIT_MAP_COUNT,
+            reserved=0,
+            commonattr=ATTR_CMN_CRTIME,
+            volattr=0,
+            dirattr=0,
+            fileattr=0,
+            forkattr=0,
+        )
+
+        ts = Timespec(
+            tv_sec=int(timestamp),
+            tv_nsec=int((timestamp % 1) * 1_000_000_000),
+        )
+
+        libc.setattrlist(
+            filepath.encode("utf-8"),
+            ctypes.byref(attrlist),
+            ctypes.byref(ts),
+            ctypes.sizeof(ts),
+            0,
+        )
+
+    except Exception:
+        pass
+    return
+
+
+def set_file_date(filepath: str, file_date: str) -> None:
+    """Set the date of a file or folder to the given date.
+    - Linux: modification time and access time
+    - Windows: modification time and creation time
+    - MacOS: modification time, access time and creation time
+
+    Args:
+        filepath (str): The path to the file to set the date for.
+        file_date (str): The date to set, in `YYYY-MM-DD` format.
+    """
+    timestamp = datetime.strptime(file_date, "%Y-%m-%d").timestamp()
+
+    os_type = get_os_type()
+    if os_type == OSType.LINUX:
+        utime(filepath, times=(timestamp, timestamp))
+
+    elif os_type == OSType.WINDOWS:
+        __set_windows_times(filepath, timestamp)
+
+    elif os_type == OSType.MACOS:
+        __set_macos_times(filepath, timestamp)
+
+    return
+
+
+def set_volume_folder_permissions(
+    volume_folder: str,
+    root_folder: str,
+    folder_permissions: str
+) -> None:
+    """Set the (chmod) permissions of a volume folder, folders between the root
+    folder and the volume folder, its sub-folders and its files. The folders are
+    set to have the given permissions. The files are set to have the given
+    permissions but without the execution bit (e.g. the folders are set to
+    `'755'` and the files to `'644'`). This function will (safely) not perform
+    anything unless the OS is Linux or MacOS.
+
+    Args:
+        volume_folder (str): The path to the volume folder.
+
+        root_folder (str): The path to the root folder that the volume folder is
+            in.
+
+        folder_permissions (str): The permissions that should be applied to the
+            folders, in string form. E.g.: `'755'`. The same permissions, but
+            without the execution bit, are applied to the files.
+    """
+    # We can't set the permissions if we don't own the file as the user. This
+    # doesn't happen in Kapowarr, as we only change the owner group, but the
+    # user could manually change it.
+
+    if get_os_type() not in (OSType.LINUX, OSType.MACOS):
+        # Only Linux and MacOS support chmod-type permissions
+        return
+
+    # Set folders leading up to, and including, the volume folder
+    octal_folder_permissions = int(folder_permissions, 8)
+    towards_volume_folder = relpath(volume_folder, root_folder).split(sep)
+    for i in range(len(towards_volume_folder)):
+        chmod(
+            join(root_folder, *towards_volume_folder[:i + 1]),
+            octal_folder_permissions
+        )
+
+    # Set all sub-folders
+    for folder in list_folders(volume_folder):
+        chmod(folder, octal_folder_permissions)
+
+    # Set all files in the folder
+    file_permissions = ''.join((
+        str(int(p) - 1) if int(p) % 2 == 1 else p
+        for p in folder_permissions
+    ))
+    octal_file_permissions = int(file_permissions, 8)
+    for file in list_files(volume_folder):
+        chmod(file, octal_file_permissions)
+
+    return
+
+
+def set_volume_folder_owner_group(
+    volume_folder: str,
+    root_folder: str,
+    owner_group: str
+) -> None:
+    """Set the (chown) group owner of a volume folder, folders between the root
+    folder and the volume folder, its sub-folders and its files. This function
+    will (safely) not perform anything unless the OS is Linux or MacOS.
+
+    Args:
+        volume_folder (str): The path to the volume folder.
+
+        root_folder (str): The path to the root folder that the volume folder is
+            in.
+
+        owner_group (str): The group that should be applied to the folders and
+            files. The string can be in the form of a group name (e.g. `'media'`)
+            or a group number (e.g. `'1000'`).
+    """
+    # We can't change the group ownership if the running user isn't part of the
+    # target ownergroup. This doesn't happen in Kapowarr, but the user could
+    # manually change it.
+
+    if get_os_type() not in (OSType.LINUX, OSType.MACOS):
+        # Only Linux and MacOS support chown-type ownership
+        return
+
+    # Set folders leading up to, and including, the volume folder
+    towards_volume_folder = relpath(volume_folder, root_folder).split(sep)
+    for i in range(len(towards_volume_folder)):
+        chown(
+            join(root_folder, *towards_volume_folder[:i + 1]),
+            group=owner_group
+        )
+
+    # Set all sub-folders
+    for folder in list_folders(volume_folder):
+        chown(folder, group=owner_group)
+
+    # Set all files in the folder
+    for file in list_files(volume_folder):
+        chown(file, group=owner_group)
+
     return
 
 

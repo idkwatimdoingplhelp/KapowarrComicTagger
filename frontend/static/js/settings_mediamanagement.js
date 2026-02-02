@@ -12,6 +12,9 @@ const inputs = {
 	'create_empty_volume_folders_input': document.querySelector('#create-vf-input'),
 	'delete_empty_folders_input': document.querySelector('#delete-empty-folders-input'),
 	'unmonitor_deleted_input': document.querySelector('#unmonitor-deleted-input'),
+	'change_file_date': document.querySelector('#change-file-date-input'),
+	'chmod_folder': document.querySelector('#chmod-folder-input'),
+	'chown_group': document.querySelector('#chown-group-input'),
 	'convert_input': document.querySelector('#convert-input'),
 	'extract_input': document.querySelector('#extract-input')
 };
@@ -35,6 +38,9 @@ function fillSettings(api_key) {
 		inputs.create_empty_volume_folders_input.checked = json.result.create_empty_volume_folders;
 		inputs.delete_empty_folders_input.checked = json.result.delete_empty_folders;
 		inputs.unmonitor_deleted_input.checked = json.result.unmonitor_deleted_issues;
+		inputs.change_file_date.value = json.result.change_file_date || '';
+		inputs.chmod_folder.value = json.result.chmod_folder;
+		inputs.chown_group.value = json.result.chown_group;
 		inputs.convert_input.checked = json.result.convert;
 		inputs.extract_input.checked = json.result.extract_issue_ranges;
 
@@ -49,6 +55,8 @@ function saveSettings(api_key) {
 	inputs.file_naming_empty_input.classList.remove('error-input');
 	inputs.file_naming_sv_input.classList.remove('error-input');
 	inputs.file_naming_vai_input.classList.remove('error-input');
+	inputs.chmod_folder.classList.remove('error-input');
+	inputs.chown_group.classList.remove('error-input');
 	const data = {
 		'rename_downloaded_files': inputs.renaming_input.checked,
 		'replace_illegal_characters': inputs.replace_illegal_characters.checked,
@@ -63,6 +71,9 @@ function saveSettings(api_key) {
 		'create_empty_volume_folders': inputs.create_empty_volume_folders_input.checked,
 		'delete_empty_folders': inputs.delete_empty_folders_input.checked,
 		'unmonitor_deleted_issues': inputs.unmonitor_deleted_input.checked,
+		'change_file_date': inputs.change_file_date.value || null,
+		'chmod_folder': inputs.chmod_folder.value,
+		'chown_group': inputs.chown_group.value,
 		'convert': inputs.convert_input.checked,
 		'extract_issue_ranges': inputs.extract_input.checked,
 		'format_preference': convert_preference,
@@ -85,6 +96,10 @@ function saveSettings(api_key) {
 					inputs.file_naming_sv_input.classList.add('error-input');
 				else if (e.result.key === 'file_naming_vai')
 					inputs.file_naming_vai_input.classList.add('error-input');
+				else if (e.result.key === 'chmod_folder')
+					inputs.chmod_folder.classList.add('error-input');
+				else if (e.result.key === 'chown_group')
+					inputs.chown_group.classList.add('error-input');
 			} else
 				console.log(e.error);
 		});

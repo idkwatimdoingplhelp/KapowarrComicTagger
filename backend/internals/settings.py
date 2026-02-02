@@ -2,6 +2,7 @@
 
 from dataclasses import _MISSING_TYPE, asdict, dataclass, field
 from functools import lru_cache
+from grp import getgrgid, getgrnam
 from logging import INFO
 from os import urandom
 from os.path import abspath, isdir, join, sep
@@ -11,7 +12,7 @@ from typing import Any, Dict, Mapping
 from backend.base.custom_exceptions import (FolderNotFound, InvalidKeyValue,
                                             InvalidSettingModification,
                                             KeyNotFound)
-from backend.base.definitions import (BaseEnum, Constants, DateType,
+from backend.base.definitions import (BaseEnum, Constants, DateType, FileDate,
                                       GCDownloadSource, SeedingHandling)
 from backend.base.files import (are_folders_colliding, folder_path,
                                 uppercase_drive_letter)
@@ -87,6 +88,9 @@ class PublicSettingsValues:
     delete_empty_folders: bool = False
 
     unmonitor_deleted_issues: bool = False
+    change_file_date: FileDate = FileDate.NONE
+    chmod_folder: str = ''
+    chown_group: str = ''
 
     convert: bool = False
     extract_issue_ranges: bool = False
@@ -188,7 +192,7 @@ class Settings(metaclass=Singleton):
                 db_values[key] = CommaList(db_values[key])
 
             if issubclass(key_type, BaseEnum):
-                db_values[key] = key_type[value.upper()]
+                db_values[key] = key_type(value)
 
         return SettingsValues(**db_values)
 
@@ -458,6 +462,38 @@ class Settings(metaclass=Singleton):
 
         elif key == 'issue_padding' and not 1 <= value <= 4:
             raise InvalidKeyValue(key, value)
+
+        elif key == 'chmod_folder':
+            if value.startswith('0'):
+                converted_value = value[1:]
+
+            if converted_value and len(converted_value) != 3:
+                raise InvalidKeyValue(key, value)
+
+            for permission_target in converted_value:
+                if permission_target not in (
+                    '0', '1', '2', '3', '4', '5', '6', '7'
+                ):
+                    raise InvalidKeyValue(key, value)
+
+            converted_value = (converted_value
+                .replace('2', '3')
+                .replace('4', '5')
+                .replace('6', '7')
+            )
+
+        elif key == 'chown_group':
+            # We can't change existing group to a group that the running user
+            # isn't a part of. If that's needed, we need to be root.
+            if value:
+                try:
+                    getgrgid(int(value))
+                except (TypeError, ValueError, KeyError):
+                    try:
+                        getgrnam(value)
+                    except KeyError:
+                        # Value is neither GID or group name
+                        raise InvalidKeyValue(key, value)
 
         elif key == 'format_preference':
             from backend.implementations.converters import ConvertersManager

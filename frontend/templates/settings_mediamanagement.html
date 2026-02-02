@@ -130,6 +130,30 @@
 							<p>Issues deleted from disk are automatically unmonitored.</p>
 						</td>
 					</tr>
+					<tr>
+						<th><label for="change-file-date-input">Change File Date</label></th>
+						<td>
+							<select id="change-file-date-input">
+								<option value="">Don't Change</option>
+								<option value="issue_release_date">Issue Release Date</option>
+							</select>
+							<p>Set date of file.</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="chmod-folder-input">Chmod Folder</label></th>
+						<td>
+							<input type="text" id="chmod-folder-input" spellcheck="false">
+							<p>Permissions applied to the folders and files (without execute bits). Give value in octal (e.g. '755'), or leave empty to disable.</p>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="chown-group-input">Chown Group</label></th>
+						<td>
+							<input type="text" id="chown-group-input" spellcheck="false">
+							<p>Ownership group applied to the folders and files. Give group name or ID (e.g. 'media' or '1001'), or leave empty to disable.</p>
+						</td>
+					</tr>
 				</tbody>
 			</table>
 			<h2>Converting</h2>

@@ -38,8 +38,8 @@ RUN \
 
 # Expose port and set environment
 EXPOSE 5656
-ENV PUID=1000 \
-    PGID=1000 \
+ENV PUID=0 \
+    PGID=0 \
     TZ=UTC
 
 # Set up s6 service for Kapowarr
