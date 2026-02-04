@@ -150,7 +150,7 @@ def extract_key(request, key: str, check_existence: bool = True) -> Any:
     else:
         # Default value
         if key == 'sort':
-            value = 'title'
+            value = LibrarySorting.TITLE
 
         elif key == 'filter':
             value = None
@@ -442,14 +442,7 @@ def api_settings():
         if hosting_changes:
             settings.backup_hosting_settings()
 
-        settings.update(
-            {
-                k: v
-                for k, v in data.items()
-                if v is not None
-            },
-            from_public=True
-        )
+        settings.update(data, from_public=True)
 
         if hosting_changes:
             Server().restart(StartType.RESTART_HOSTING_CHANGES)
