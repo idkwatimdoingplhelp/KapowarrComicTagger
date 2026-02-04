@@ -12,7 +12,11 @@ RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=private \
     --mount=target=/var/cache/apt,type=cache,sharing=private \
     apt-get update && \
     apt-get install -y --no-install-recommends \
-        build-essential libssl-dev libffi-dev pkg-config
+    build-essential \
+    libssl-dev \
+    libffi-dev \
+    pkg-config \
+    libicu-dev
 
 # Copy Python From Python Stage
 COPY --from=python /usr/local /usr/local
@@ -32,6 +36,7 @@ WORKDIR /app
 RUN --mount=target=/var/lib/apt/lists,type=cache,sharing=private \
     --mount=target=/var/cache/apt,type=cache,sharing=private \
     apt-get update \
+    && apt-get install -y --no-install-recommends libicu72 \
     && apt-get full-upgrade -y \
     && apt-get autoremove -y
 COPY --from=tianon/gosu /gosu /usr/local/bin/
@@ -45,7 +50,8 @@ RUN groupadd -g 1000 kapowarr && \
     useradd -u 1000 -g kapowarr -d /app -M -s /bin/bash kapowarr
     
 COPY . .
- 
+RUN sed -i 's/\r$//' /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
 ENV PUID=0 \
     PGID=0 \
     TZ=UTC
