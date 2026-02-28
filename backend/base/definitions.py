@@ -92,6 +92,8 @@ class Constants:
     STATUS_FORCELIST_RETRIES = (500, 502, 503, 504)
     "The HTTP status codes for which a retry should be done"
 
+    PROXY_TEST_URL = "https://httpbin.org/ip"
+
     CV_SITE_URL = "https://comicvine.gamespot.com"
     "The base URL of ComicVine"
 
@@ -266,6 +268,16 @@ class StartType(BaseEnum):
     "A normal restart"
     RESTART_HOSTING_CHANGES = 132
     "A restart because changes to the hosting settings were made"
+
+
+class ProxyType(BaseEnum):
+    NONE = None
+    "Proxy disabled"
+
+    HTTP = "http"
+    HTTPS = "https"
+    SOCKS5 = "socks5"
+    SOCKS5H = "socks5h"
 
 
 class FileDate(BaseEnum):
@@ -774,12 +786,20 @@ class CredentialData:
             self.api_key = self.api_key.strip() or None
         return
 
-    def todict(self) -> Dict[str, Any]:
-        "Note: Will replace password with a string of stars"
+    def todict(self, hide_password: bool = False) -> Dict[str, Any]:
+        """Return a dictionary version of this dataclass.
+
+        Args:
+            hide_password (bool, optional): Replace the password with stars.
+                Defaults to False.
+
+        Returns:
+            Dict[str, Any]: The dictionary.
+        """
         result = asdict(self)
 
         result['source'] = self.source.value
-        if result['password'] is not None:
+        if result['password'] is not None and hide_password:
             result['password'] = Constants.CREDENTIAL_REPLACEMENT
 
         return result

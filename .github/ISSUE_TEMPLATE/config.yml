@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation Hub
+    url: https://casvt.github.io/Kapowarr/
+    about: You can find the documentation for Kapowarr here.
+  - name: Discord Server
+    url: https://discord.gg/5gWtW3ekgZ
+    about: Get in contact on the discord server.
+  - name: Subreddit
+    url: https://www.reddit.com/r/kapowarr/
+    about: Get in contact on the subreddit.
