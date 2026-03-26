@@ -1,40 +1,32 @@
 #!/usr/bin/env bash
-
 set -e
 
-PUID=${PUID}
-PGID=${PGID}
-ID_CACHE_FILE="/app/.id_cache"
+PUID=${PUID:-0}
+PGID=${PGID:-0}
 
-# Stay as root user
-if [ "$PUID" = "0" ]; then
-    echo "Running as root user..."
+DB_DIR="/app/db"
+LOG_DIR="/app/logs"
+TD_DIR="/app/temp_downloads"
+
+if [ "$PUID" = "0" ]
+then
+    # Stay as root user
+    echo "Running as root"
     exec "$@"
 
-# Switch to non-root user
 else
-    echo "Updating kapowarr to ($PUID:$PGID)..."
+    # Switch to non-root user
+    echo "Preparing Kapowarr to run as $PUID:$PGID..."
 
-    # Group
-    if [ "$(id -g kapowarr)" != "$PGID" ]; then 
-        groupmod -o -g "$PGID" kapowarr
-    fi
-    # User
-    if [ "$(id -u kapowarr)" != "$PUID" ]; then
-        usermod -o -u "$PUID" -g "$PGID" kapowarr
-    fi
+    groupmod -o -g "$PGID" kapowarr
+    usermod -o -u "$PUID" -g "$PGID" kapowarr
 
-    # Mount permissions
-    CURRENT_ID="${PUID}:${PGID}"
-    if [ -f "$ID_CACHE_FILE" ] && [ "$(cat "$ID_CACHE_FILE")" = "$CURRENT_ID" ]; then
-        echo "Permissions match. Skipping chown."
-    else
-        echo "Permission mismatch or first run. Updating permissions..."
-        chown -R kapowarr:kapowarr /app
-        echo "$CURRENT_ID" > "$ID_CACHE_FILE"
-    fi
+    echo "Ensuring ownership..."
+    chown -R kapowarr:kapowarr "$DB_DIR" "$LOG_DIR" "$TD_DIR" || {
+        echo "Failed to update ownership to $PUID:$PGID"
+        exit 1
+    }
 
-    # Drop Privileges
-    echo "Dropping privileges to kapowarr ($PUID:$PGID)..."
+    echo "Running as $PUID:$PGID"
     exec gosu kapowarr "$@"
 fi

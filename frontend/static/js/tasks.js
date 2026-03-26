@@ -20,6 +20,7 @@ function convertInterval(interval) {
 };
 
 function convertTime(epoch, future) {
+	if (epoch === null) return 'Never';
 	result = Math.round(Math.abs(Date.now() / 1000 - epoch) / 3600); // delta hours
 	if (future) return `in ${result} hours`;
 	else return `${result} hours ago`;

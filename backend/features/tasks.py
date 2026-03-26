@@ -896,9 +896,23 @@ class TaskHandler(metaclass=Singleton):
             dict: The info of the task in the queue.
                 Formatted using `self.__format_entry()`.
         """
+        return self.__format_entry(self.__get_raw_entry(task_id))
+
+    def __get_raw_entry(self, task_id: int) -> dict:
+        """Get the raw entry from the queue based on it's id
+        
+        Args:
+            task_id (int): The id of the task to get from the queue
+            
+        Raises:
+            TaskNotFound: The id doesn't match with any task in the queue
+            
+        Returns:
+            dict: The raw entry of the task in the queue.
+        """
         for entry in self.queue:
             if entry['id'] == task_id:
-                return self.__format_entry(entry)
+                return entry
         raise TaskNotFound(task_id)
 
     def remove(self, task_id: int) -> None:
@@ -913,7 +927,7 @@ class TaskHandler(metaclass=Singleton):
         """
         # Get task and check if id exists
         # Raises TaskNotFound if the id isn't found
-        task = self.get_one(task_id)
+        task = self.__get_raw_entry(task_id)
 
         # Check if task is allowed to be deleted
         if self.queue[0] == task:
@@ -971,7 +985,7 @@ def get_task_planning() -> List[dict]:
         SELECT
             i.task_name, interval, next_run, run_at AS last_run
         FROM task_intervals i
-        INNER JOIN (
+        LEFT JOIN (
             SELECT
                 task_name,
                 MAX(run_at) AS run_at

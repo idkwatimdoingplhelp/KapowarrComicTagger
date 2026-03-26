@@ -1420,7 +1420,7 @@ def refresh_and_scan(
             LEFT JOIN issues i
             ON v.id = i.volume_id
             WHERE v.last_cv_fetch <= ?
-            GROUP BY i.volume_id;
+            GROUP BY v.id;
             """,
             (one_day_ago.timestamp(),)
         ))

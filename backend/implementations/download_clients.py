@@ -384,7 +384,11 @@ class BaseDirectDownload(Download):
             and self.__r.raw._fp
             and not isinstance(self.__r.raw._fp, str)
         ):
-            self.__r.raw._fp.fp.raw._sock.shutdown(2) # SHUT_RDWR
+            try:
+                self.__r.raw._fp.fp.raw._sock.shutdown(2)  # SHUT_RDWR
+            except OSError as e:
+                if e.errno != 9:
+                    raise
         return
 
     def as_dict(self) -> Dict[str, Any]:
@@ -444,15 +448,14 @@ class MediaFireDownload(BaseDirectDownload):
             raise LinkBroken(self.download_link)
 
         href: str = first_of_range(button['href'])
-        data_scrambled_url: str = first_of_range(button['data-scrambled-url'])
         if href.startswith('http'):
-            return first_of_range(button['href'])
+            return href
 
-        elif data_scrambled_url:
-            return b64decode(data_scrambled_url).decode('utf-8')
+        data_scrambled_url = button.get('data-scrambled-url')
+        if data_scrambled_url:
+            return b64decode(first_of_range(data_scrambled_url)).decode('utf-8')
 
-        else:
-            raise LinkBroken(self.download_link)
+        raise LinkBroken(self.download_link)
 
 
 # region MediaFire Folder

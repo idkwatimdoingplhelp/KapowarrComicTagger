@@ -118,6 +118,9 @@ class Constants:
     FS_API_BASE = "/v1"
     "The base endpoint of the FlareSolverr API"
 
+    MAX_CONCURRENT_FS_SESSIONS = 2
+    "The maximum amount of FlareSolverr browser sessions that can concurrently run"
+
     CF_CHALLENGE_HEADER = ("cf-mitigated", "challenge")
     """
     The key and value of the header supplied by CloudFlare
