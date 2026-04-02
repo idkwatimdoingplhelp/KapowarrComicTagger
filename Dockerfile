@@ -46,7 +46,8 @@ RUN --mount=from=builder,source=/wheels,target=/wheels \
     pip3 install --no-index --find-links=/wheels -r /wheels/requirements.txt
 
 RUN groupadd -g 1000 kapowarr && \
-    useradd -u 1000 -g kapowarr -d /nonexistent -M -s /bin/bash kapowarr && \
+    useradd -u 1000 -g kapowarr -d /home/kapowarr -M -s /bin/bash kapowarr && \
+    chmod -R 777 /home && \
     mkdir -p /app/db /app/logs /app/temp_downloads
 
 COPY --chmod=755 . .
