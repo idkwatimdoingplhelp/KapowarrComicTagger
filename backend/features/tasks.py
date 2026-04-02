@@ -900,13 +900,13 @@ class TaskHandler(metaclass=Singleton):
 
     def __get_raw_entry(self, task_id: int) -> dict:
         """Get the raw entry from the queue based on it's id
-        
+
         Args:
             task_id (int): The id of the task to get from the queue
-            
+
         Raises:
             TaskNotFound: The id doesn't match with any task in the queue
-            
+
         Returns:
             dict: The raw entry of the task in the queue.
         """

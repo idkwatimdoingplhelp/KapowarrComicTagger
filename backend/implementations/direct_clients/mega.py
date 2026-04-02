@@ -1059,7 +1059,7 @@ class MegaFolder(MegaABC):
             and self.__r._fp.fp is not None
             and self.__r._fp.fp.raw is not None
         ):
-            
+
             try:
                 self.__r._fp.fp.raw._sock.shutdown(2) # SHUT_RDWR
             except OSError as e:

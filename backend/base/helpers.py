@@ -14,11 +14,13 @@ from hashlib import pbkdf2_hmac
 from multiprocessing.pool import Pool
 from os import cpu_count, environ, sep
 from os.path import basename, dirname, exists, isfile, join
+from re import compile
 from subprocess import run
 from sys import base_exec_prefix, executable, maxsize, platform, version_info
 from threading import current_thread
 from typing import (TYPE_CHECKING, Any, Callable, Collection, Dict, Iterable,
                     Iterator, List, Mapping, Sequence, Tuple, Union)
+from unicodedata import normalize
 from urllib.parse import quote_plus, unquote
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
@@ -511,9 +513,42 @@ def normalise_string(s: str) -> str:
         .replace('_28', '(')
         .replace('_29', ')')
         .replace('–', '-')
+        .replace('—', '-')
         .replace('’', "'")
+        .replace('‘', '\'')
+        .replace('`', '\'')
+        .replace('“', '"')
+        .replace('”', '"')
         .strip()
     )
+
+
+combining_marks_regex = compile(r'[\u0300-\u036f]')
+
+
+def normalise_query_string(s: str) -> str:
+    """On top of the standard normalisation of `normalise_string()`, also
+    replace special characters with their ASCII version. E.g. 'æ' to 'ae' and
+    'ō' to 'o'.
+
+    Args:
+        s (str): Input string.
+
+    Returns:
+        str: Normalised string.
+    """
+    s = (normalise_string(s)
+        .replace('æ', 'ae')
+        .replace('Æ', 'ae')
+        .replace('œ', 'oe')
+        .replace('Œ', 'oe')
+        .replace('ß', 'ss')
+        .replace('ø', 'o')
+        .replace('Ø', 'o')
+    )
+    s = normalize('NFKD', s)
+    s = combining_marks_regex.sub('', s)
+    return s
 
 
 def normalise_number(s: str) -> str:
@@ -552,6 +587,8 @@ def normalise_year(s: str) -> Union[int, None]:
 
     s = (s
         .strip()
+        .lower()
+        .replace('circa ', '')
         .replace('-', '0')
         .replace(',', '/')
         .replace('?', '')

@@ -628,7 +628,7 @@ class VolumeMetadata(TypedDict):
     issue_count: int
     translated: bool
     already_added: Union[int, None]
-    issues: Union[List['IssueMetadata'], None]
+    issues: Union[List[IssueMetadata], None]
 
 
 class CVFileMapping(TypedDict):
@@ -712,6 +712,9 @@ class BaseNamingKeys:
     year: Union[int, None]
     publisher: Union[str, None]
 
+    def todict(self) -> Dict[str, Any]:
+        return asdict(self)
+
 
 @dataclass
 class VolumeNamingKeys(BaseNamingKeys):
@@ -721,7 +724,7 @@ class VolumeNamingKeys(BaseNamingKeys):
 @dataclass
 class TitlelessIssueNamingKeys(BaseNamingKeys):
     issue_comicvine_id: int
-    issue_number: Union[str, None]
+    issue_number: str
     issue_release_date: Union[str, None]
     issue_release_year: Union[int, None]
 
@@ -740,7 +743,7 @@ class IssueData:
     calculated_issue_number: float
     title: Union[str, None]
     date: Union[str, None]
-    description: Union[str, None]
+    description: str
     monitored: bool
     files: List[FileData]
 
@@ -754,11 +757,11 @@ class VolumeData:
     comicvine_id: int
     title: str
     alt_title: Union[str, None]
-    year: int
-    publisher: str
+    year: Union[int, None]
     volume_number: int
     description: str
     site_url: str
+    publisher: Union[str, None]
     monitored: bool
     monitor_new_issues: bool
     root_folder: int

@@ -79,6 +79,14 @@ def clean_filepath(filepath: str) -> str:
 
 
 # region Name generation
+KEY_TO_UNKNOWN = {
+    "year": "Unknown Year",
+    "publisher": "Unknown Publisher",
+    "issue_release_date": "Unknown Date",
+    "issue_release_year": "Unknown Year"
+}
+
+
 def _fill_format(
     naming_format: str,
     formatting_data: BaseNamingKeys
@@ -94,8 +102,8 @@ def _fill_format(
         str: The resulting filename.
     """
     filled_format = naming_format.format_map({
-        k: v if v is not None else 'Unknown'
-        for k, v in formatting_data.__dict__.items()
+        k: v if v is not None else KEY_TO_UNKNOWN.get(k, "Unknown")
+        for k, v in formatting_data.todict().items()
     })
     save_filled_format = clean_filepath(filled_format)
     return save_filled_format
@@ -128,7 +136,7 @@ def _get_base_naming_keys(volume_data: VolumeData) -> BaseNamingKeys:
         volume_number=str(volume_data.volume_number).zfill(volume_padding),
         comicvine_id=volume_data.comicvine_id,
         year=volume_data.year,
-        publisher=clean_filestring(volume_data.publisher)
+        publisher=clean_filestring(volume_data.publisher or '') or None
     )
 
 
@@ -147,7 +155,7 @@ def get_volume_naming_keys(volume_data: VolumeData) -> VolumeNamingKeys:
         sv_mapping = SV_TO_SHORT_TERM
 
     return VolumeNamingKeys(
-        **_get_base_naming_keys(volume_data).__dict__,
+        **_get_base_naming_keys(volume_data).todict(),
 
         special_version=sv_mapping.get(volume_data.special_version)
     )
@@ -199,16 +207,11 @@ def get_issue_naming_keys(
     """
     issue_padding = Settings().sv.issue_padding
 
-    if issue_data.issue_number:
-        issue_number = str(issue_data.issue_number).zfill(issue_padding)
-    else:
-        issue_number = None
-
     return IssueNamingKeys(
-        **_get_base_naming_keys(volume_data).__dict__,
+        **_get_base_naming_keys(volume_data).todict(),
 
         issue_comicvine_id=issue_data.comicvine_id,
-        issue_number=issue_number,
+        issue_number=str(issue_data.issue_number).zfill(issue_padding),
         issue_release_date=issue_data.date,
         issue_release_year=extract_year_from_date(issue_data.date),
         issue_title=clean_filestring(issue_data.title or '') or None

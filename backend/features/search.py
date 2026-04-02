@@ -9,7 +9,7 @@ from backend.base.definitions import (QUERY_FORMATS, MatchedSearchResultData,
 from backend.base.file_extraction import refine_special_version
 from backend.base.helpers import (AsyncSession, check_overlapping_issues,
                                   extract_year_from_date, force_range,
-                                  get_subclasses)
+                                  get_subclasses, normalise_query_string)
 from backend.base.logging import LOGGER
 from backend.implementations.getcomics import search_getcomics
 from backend.implementations.matching import check_search_result_match
@@ -229,7 +229,7 @@ def manual_search(
                 for f in formats
             )
 
-        search_title = title.replace(':', '')
+        search_title = normalise_query_string(title).replace(':', '')
         search_results = run(search_multiple_queries(*(
             format.format(
                 title=search_title, volume_number=volume_data.volume_number,
