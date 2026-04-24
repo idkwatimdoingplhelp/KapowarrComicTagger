@@ -475,6 +475,17 @@ class DownloadType(BaseEnum):
     TORRENT = 2
 
 
+class ExternalClientField(BaseEnum):
+    "A field for which the external client possibly requires a value to work"
+
+    TITLE = "title"
+    ENABLED = "enabled"
+    BASE_URL = "base_url"
+    USERNAME = "username"
+    PASSWORD = "password"
+    API_TOKEN = "api_token"
+
+
 class GCDownloadSource(BaseEnum):
     "Download sources offered on a GetComics webpage"
 
@@ -666,6 +677,19 @@ class DownloadGroup(TypedDict):
     web_sub_title: str
     info: FilenameData
     links: Dict[GCDownloadSource, List[str]]
+
+
+class ExternalDownloadClientData(TypedDict):
+    id: int
+    enabled: bool
+    download_type: int
+    client_type: str
+    required_tokens: List[str]
+    title: str
+    base_url: str
+    username: Union[str, None]
+    password: Union[str, None]
+    api_token: Union[str, None]
 
 
 class ClientTestResult(TypedDict):
@@ -1033,7 +1057,7 @@ class ExternalDownloadClient(ABC):
     download_type: DownloadType
     "The protocol it uses to download (e.g. a torrent)"
 
-    required_tokens: Sequence[str]
+    required_tokens: Tuple[ExternalClientField, ...]
     """
     The keys the client needs or could need for operation
     (mostly whether it's username + password or api_token)
@@ -1079,11 +1103,11 @@ class ExternalDownloadClient(ABC):
         ...
 
     @abstractmethod
-    def get_client_data(self) -> Dict[str, Any]:
+    def get_client_data(self) -> ExternalDownloadClientData:
         """Get info about the client.
 
         Returns:
-            Dict[str, Any]: The info about the client.
+            ExternalDownloadClientData: The info about the client.
         """
         ...
 
@@ -1169,9 +1193,10 @@ class ExternalDownloadClient(ABC):
         """
         ...
 
-    @staticmethod
+    @classmethod
     @abstractmethod
     def test(
+        cls,
         base_url: str,
         username: Union[str, None],
         password: Union[str, None],

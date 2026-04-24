@@ -1,28 +1,40 @@
 # -*- coding: utf-8 -*-
 
-from sqlite3 import IntegrityError
-from typing import Any, Dict, List, Mapping, Type, Union
+"""
+The manager of external download clients and their base class
+"""
 
+from importlib import import_module
+from os.path import basename, dirname, splitext
+from sqlite3 import IntegrityError
+from typing import Any, Dict, List, Mapping, Tuple, Type, Union, cast
+
+import backend.implementations.torrent_clients as tc
 from backend.base.custom_exceptions import (ClientNotWorking,
                                             CredentialInvalid,
                                             ExternalClientDownloading,
                                             ExternalClientNotFound,
                                             InvalidKeyValue, KeyNotFound)
 from backend.base.definitions import (ClientTestResult, DownloadType,
-                                      ExternalDownloadClient)
-from backend.base.helpers import get_subclasses, normalise_base_url
+                                      ExternalClientField,
+                                      ExternalDownloadClient,
+                                      ExternalDownloadClientData)
+from backend.base.files import list_files
+from backend.base.helpers import normalise_base_url
 from backend.internals.db import get_db
 
+ECF = ExternalClientField
 
-# =====================
+
 # region Base External Client
-# =====================
 class BaseExternalClient(ExternalDownloadClient):
-    required_tokens = ('title', 'base_url')
-
     @property
     def id(self) -> int:
         return self._id
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
 
     @property
     def title(self) -> str:
@@ -48,6 +60,7 @@ class BaseExternalClient(ExternalDownloadClient):
         self._id = client_id
         data = get_db().execute("""
             SELECT
+                enabled,
                 download_type, client_type,
                 title, base_url,
                 username, password,
@@ -58,6 +71,7 @@ class BaseExternalClient(ExternalDownloadClient):
             """,
             (client_id,)
         ).fetchone()
+        self._enabled = data['enabled']
         self._title = data['title']
         self._base_url = data['base_url']
         self._username = data['username']
@@ -65,11 +79,13 @@ class BaseExternalClient(ExternalDownloadClient):
         self._api_token = data['api_token']
         return
 
-    def get_client_data(self) -> Dict[str, Any]:
+    def get_client_data(self) -> ExternalDownloadClientData:
         return {
             'id': self._id,
+            'enabled': self._enabled,
             'download_type': self.download_type.value,
             'client_type': self.client_type,
+            'required_tokens': [rt.value for rt in self.required_tokens],
             'title': self._title,
             'base_url': self._base_url,
             'username': self._username,
@@ -86,40 +102,56 @@ class BaseExternalClient(ExternalDownloadClient):
             raise ExternalClientDownloading(self.id)
 
         filtered_data: Dict[str, Any] = {}
-        for key in ('title', 'base_url', 'username', 'password', 'api_token'):
-            if key in self.required_tokens and key not in data:
-                raise KeyNotFound(key)
+        for key in ECF._member_map_.values():
+            if key in self.required_tokens and key.value not in data:
+                raise KeyNotFound(key.value)
 
-            if key in ('title', 'base_url') and data[key] is None:
-                raise InvalidKeyValue(key, None)
+            if (
+                key in (ECF.TITLE, ECF.ENABLED, ECF.BASE_URL)
+                and data[key.value] is None
+            ):
+                raise InvalidKeyValue(key.value, None)
 
-            if key == 'base_url':
-                filtered_data[key] = normalise_base_url(data[key])
+            if key == ECF.BASE_URL:
+                if not isinstance(data[key.value], str):
+                    raise InvalidKeyValue(key.value, data[key.value])
+                filtered_data[key.value] = normalise_base_url(data[key.value])
+
+            elif key == ECF.ENABLED:
+                if not isinstance(data[key.value], bool):
+                    raise InvalidKeyValue(key.value, data[key.value])
+                filtered_data[key.value] = data[key.value]
 
             elif key in self.required_tokens:
-                filtered_data[key] = data[key]
+                if not isinstance(data[key.value], str):
+                    raise InvalidKeyValue(key.value, data[key.value])
+                filtered_data[key.value] = data[key.value]
 
             else:
-                filtered_data[key] = None
+                filtered_data[key.value] = None
 
         if (
-            filtered_data['username'] is not None
-            and filtered_data['password'] is None
+            filtered_data[ECF.USERNAME.value] is not None
+            and filtered_data[ECF.PASSWORD.value] is None
         ):
             # Username given but not password
-            raise InvalidKeyValue('password', filtered_data['password'])
+            raise InvalidKeyValue(
+                ECF.PASSWORD.value,
+                filtered_data[ECF.PASSWORD.value]
+            )
 
         # Raises exception on fail
         self.test(
-            filtered_data['base_url'],
-            filtered_data['username'],
-            filtered_data['password'],
-            filtered_data['api_token']
+            filtered_data[ECF.BASE_URL.value],
+            filtered_data[ECF.USERNAME.value],
+            filtered_data[ECF.PASSWORD.value],
+            filtered_data[ECF.API_TOKEN.value]
         )
 
         cursor.execute("""
             UPDATE external_download_clients
             SET
+                enabled = :enabled,
                 title = :title,
                 base_url = :base_url,
                 username = :username,
@@ -132,11 +164,12 @@ class BaseExternalClient(ExternalDownloadClient):
                 "id": self._id
             }
         )
-        self._title = filtered_data["title"]
-        self._base_url = filtered_data["base_url"]
-        self._username = filtered_data["username"]
-        self._password = filtered_data["password"]
-        self._api_token = filtered_data["api_token"]
+        self._enabled = filtered_data[ECF.ENABLED.value]
+        self._title = filtered_data[ECF.TITLE.value]
+        self._base_url = filtered_data[ECF.BASE_URL.value]
+        self._username = filtered_data[ECF.USERNAME.value]
+        self._password = filtered_data[ECF.PASSWORD.value]
+        self._api_token = filtered_data[ECF.API_TOKEN.value]
 
         return
 
@@ -153,53 +186,93 @@ class BaseExternalClient(ExternalDownloadClient):
         return
 
 
-# =====================
 # region Clients
-# =====================
 class ExternalClients:
-    @staticmethod
-    def get_client_types() -> Dict[str, Type[ExternalDownloadClient]]:
-        """Get a mapping of the client type strings to their class.
+    clients: Dict[DownloadType, Dict[str, Type[ExternalDownloadClient]]] = {
+        dt: {}
+        for dt in DownloadType
+    }
 
-        Returns:
-            Dict[str, Type[ExternalDownloadClient]]: The mapping.
+    @classmethod
+    def register_client(
+        cls,
+        download_type: DownloadType,
+        client_type: str,
+        required_tokens: Tuple[ExternalClientField, ...]
+    ):
+        """Register an external download client.
+
+        ```
+        @ExternalClients.register_client(
+            DownloadType.TORRENT, 'ProductName',
+            (ECF.TITLE, ECF.BASE_URL, ECF.USERNAME, ECF.PASSWORD)
+        )
+        class ProductName(ExternalDownloadClient):
+            ...
+        ```
+
+        Args:
+            download_type (DownloadType): The protocol that the client handles.
+            client_type (str): The product name of the client (e.g. 'qBittorrent').
+            required_tokens (Tuple[ExternalClientField, ...]): The fields that
+                the client needs.
         """
-        from backend.implementations.torrent_clients import (Transmission,
-                                                             qBittorrent)
-        return {
-            client.client_type: client
-            for client in sorted(
-                get_subclasses(BaseExternalClient),
-                key=lambda c: c.client_type.lower()
-            )
-        }
+        def wrapper(
+            client_class: Type[ExternalDownloadClient]
+        ) -> Type[ExternalDownloadClient]:
+            cls.clients[download_type][client_type] = client_class
+            client_class.download_type = download_type
+            client_class.client_type = client_type
+            client_class.required_tokens = required_tokens
+            return client_class
+        return wrapper
 
     @staticmethod
+    def _import_clients() -> None:
+        """Import the implementations of the external download clients in the
+        sub-folders, automatically making them register themselves.
+        """
+        for file in sorted(
+            list_files(
+                dirname(tc.__file__ or '')
+            ),
+            key=lambda f: f.lower()
+        ):
+            if file.endswith(".py") and not file.endswith("__init__.py"):
+                module_name = splitext(basename(file))[0]
+                import_module(f"{tc.__name__}.{module_name}")
+        return
+
+    @classmethod
     def test(
+        cls,
+        download_type: DownloadType,
         client_type: str,
         base_url: str,
         username: Union[str, None],
         password: Union[str, None],
         api_token: Union[str, None]
     ) -> ClientTestResult:
-        """Test if an external client is supported, working and available.
+        """Test whether an external client is supported, working and available.
 
         Args:
-            client_type (str): The client type, which is the value of the
-            client's `client_type` attribute.
+            download_type (DownloadType): The protocol that the client handles.
+
+            client_type (str): The client type of the client, as supplied when
+                they registered to this class.
 
             base_url (str): The base URL of the client.
 
             username (Union[str, None]): The username to use when authenticating
-            to the client.
+                to the client.
                 Allowed to be `None` if not applicable.
 
             password (Union[str, None]): The password to use when authenticating
-            to the client.
+                to the client.
                 Allowed to be `None` if not applicable.
 
             api_token (Union[str, None]): The api token to use when authenticating
-            to the client.
+                to the client.
                 Allowed to be `None` if not applicable.
 
         Raises:
@@ -208,10 +281,13 @@ class ExternalClients:
         Returns:
             ClientTestResult: Whether the test was successful.
         """
-        client_types = ExternalClients.get_client_types()
+        try:
+            type_clients = cls.clients[download_type]
+        except KeyError:
+            raise InvalidKeyValue('download_type', download_type)
 
         try:
-            client_types[client_type].test(
+            type_clients[client_type].test(
                 normalise_base_url(base_url),
                 username,
                 password,
@@ -219,7 +295,7 @@ class ExternalClients:
             )
 
         except KeyError:
-            raise InvalidKeyValue('type', client_type)
+            raise InvalidKeyValue('client_type', client_type)
 
         except ClientNotWorking as e:
             return ClientTestResult({
@@ -239,9 +315,12 @@ class ExternalClients:
                 'description': None
             })
 
-    @staticmethod
+    @classmethod
     def add(
+        cls,
+        download_type: DownloadType,
         client_type: str,
+        enabled: bool,
         title: str,
         base_url: str,
         username: Union[str, None],
@@ -251,23 +330,27 @@ class ExternalClients:
         """Add an external client.
 
         Args:
-            client_type (str): The client type, which is the value of the
-            client's `client_type` attribute.
+            download_type (DownloadType): The protocol that the client handles.
+
+            client_type (str): The client type of the client, as supplied when
+                they registered to this class.
+
+            enabled (bool): Whether the client is enabled or not.
 
             title (str): The title to give the client.
 
             base_url (str): The base URL of the client.
 
             username (Union[str, None]): The username to use when authenticating
-            to the client.
+                to the client.
                 Allowed to be `None` if not applicable.
 
             password (Union[str, None]): The password to use when authenticating
-            to the client.
+                to the client.
                 Allowed to be `None` if not applicable.
 
             api_token (Union[str, None]): The api token to use when authenticating
-            to the client.
+                to the client.
                 Allowed to be `None` if not applicable.
 
         Raises:
@@ -278,6 +361,9 @@ class ExternalClients:
         Returns:
             ExternalDownloadClient: The new client.
         """
+        if not isinstance(enabled, bool):
+            raise InvalidKeyValue('enabled', enabled)
+
         if title is None:
             raise InvalidKeyValue('title', title)
 
@@ -288,20 +374,28 @@ class ExternalClients:
             raise InvalidKeyValue('password', password)
 
         try:
-            ClientClass = ExternalClients.get_client_types()[client_type]
+            type_clients = cls.clients[download_type]
         except KeyError:
-            raise InvalidKeyValue('type', client_type)
+            raise InvalidKeyValue('download_type', download_type)
 
-        ExternalClients.get_client_types()[client_type].test(
+        try:
+            ClientClass = type_clients[client_type]
+        except KeyError:
+            raise InvalidKeyValue('client_type', client_type)
+
+        ClientClass.test(
             normalise_base_url(base_url),
             username,
             password,
             api_token
         )
 
+        allowed_keys = [
+            rt.value
+            for rt in ClientClass.required_tokens
+        ]
         data = {
-            'download_type': ClientClass.download_type.value,
-            'client_type': client_type,
+            'enabled': enabled,
             'title': title,
             'base_url': normalise_base_url(base_url),
             'username': username,
@@ -309,24 +403,23 @@ class ExternalClients:
             'api_token': api_token
         }
         data = {
-            k: (
-                v
-                if k in (
-                    *ClientClass.required_tokens,
-                    'download_type', 'client_type'
-                ) else
-                None
-            )
+            k: v if k in allowed_keys else None
             for k, v in data.items()
         }
+        data.update({
+            'download_type': ClientClass.download_type.value,
+            'client_type': client_type
+        })
 
         client_id = get_db().execute(
             """
             INSERT INTO external_download_clients(
+                enabled,
                 download_type, client_type,
                 title, base_url,
                 username, password, api_token
             ) VALUES (
+                :enabled,
                 :download_type, :client_type,
                 :title, :base_url,
                 :username, :password, :api_token
@@ -334,33 +427,46 @@ class ExternalClients:
             """,
             data
         ).lastrowid
-        return ExternalClients.get_client(client_id)
+        return cls.get_client(client_id)
 
-    @staticmethod
-    def get_clients() -> List[Dict[str, Any]]:
+    @classmethod
+    def get_clients(cls) -> List[ExternalDownloadClientData]:
         """Get a list of all external clients.
 
         Returns:
-            List[Dict[str, Any]]: The list with all external clients.
+            List[ExternalDownloadClientData]: The list with all external clients.
         """
-        result = get_db().execute("""
-            SELECT
-                id, download_type, client_type,
-                title, base_url,
-                username, password,
-                api_token
-            FROM external_download_clients
-            ORDER BY title, id;
-            """
-        ).fetchalldict()
+        result = cast(List[ExternalDownloadClientData], [
+            {
+                **client,
+                "required_tokens": [
+                    rt.value
+                    for rt in cls.clients
+                    [DownloadType(client["download_type"])]
+                    [client["client_type"]]
+                    .required_tokens
+                ]
+            }
+            for client in get_db().execute("""
+                SELECT
+                    id, enabled,
+                    download_type, client_type,
+                    title, base_url,
+                    username, password,
+                    api_token
+                FROM external_download_clients
+                ORDER BY title, id;
+                """
+            ).fetchalldict()
+        ])
         return result
 
-    @staticmethod
-    def get_client(client_id: int) -> ExternalDownloadClient:
-        """Get an external client based on it's ID.
+    @classmethod
+    def get_client(cls, client_id: int) -> ExternalDownloadClient:
+        """Get an external client based on its ID.
 
         Args:
-            id (int): The ID of the external client.
+            client_id (int): The ID of the external client.
 
         Raises:
             ExternalClientNotFound: The ID does not link to any client.
@@ -368,63 +474,58 @@ class ExternalClients:
         Returns:
             ExternalDownloadClient: The client.
         """
-        client_type = get_db().execute("""
-            SELECT client_type
+        client_types = get_db().execute("""
+            SELECT download_type, client_type
             FROM external_download_clients
             WHERE id = ?
             LIMIT 1;
             """,
             (client_id,)
-        ).exists()
+        ).fetchone()
 
-        if not client_type:
+        if not client_types:
             raise ExternalClientNotFound(client_id)
 
-        return ExternalClients.get_client_types()[client_type](client_id)
+        return (cls
+            .clients
+            [DownloadType(client_types[0])]
+            [client_types[1]]
+            (client_id)
+        )
 
-    @staticmethod
+    @classmethod
     def get_least_used_client(
+        cls,
         download_type: DownloadType
     ) -> ExternalDownloadClient:
-        """Get the least used client of a specific download type.
+        """Get the least used client of a specific download type that is enabled.
 
         Args:
             download_type (DownloadType): The download type to get the client
-            for.
+                for.
 
         Raises:
-            ExternalClientNotFound: No client of the specified type was found.
+            ExternalClientNotFound: No client of the specified type was found
+                or all of them are disabled.
 
         Returns:
             ExternalDownloadClient: The least used client.
         """
-        cursor = get_db()
-        lu_id = cursor.execute("""
+        least_used_id = get_db().execute("""
             SELECT clients.id
-            FROM download_queue queue
-            INNER JOIN external_download_clients clients
-                ON queue.external_client_id = clients.id
+            FROM external_download_clients clients
+            LEFT JOIN download_queue queue
+            ON clients.id = queue.external_client_id
             WHERE clients.download_type = ?
+                AND clients.enabled = 1
             GROUP BY clients.id
             ORDER BY COUNT(queue.id)
             LIMIT 1;
             """,
             (download_type.value,)
-        ).fetchone()
+        ).exists()
 
-        if lu_id:
-            return ExternalClients.get_client(lu_id[0])
-
-        first_id = cursor.execute("""
-            SELECT id
-            FROM external_download_clients
-            WHERE download_type = ?
-            LIMIT 1;
-            """,
-            (download_type.value,)
-        ).fetchone()
-
-        if first_id:
-            return ExternalClients.get_client(first_id[0])
+        if least_used_id:
+            return cls.get_client(least_used_id)
 
         raise ExternalClientNotFound(-1)
