@@ -69,7 +69,8 @@ def _main(
     from backend.base.logging import LOGGER, setup_logging
     from backend.features.download_queue import DownloadHandler
     from backend.features.tasks import TaskHandler
-    from backend.implementations.external_clients import ExternalClients
+    from backend.implementations.download_client_manager import DownloadClients
+    from backend.implementations.external_client_manager import ExternalClients
     from backend.internals.db import set_db_location, setup_db
     from backend.internals.server import Server, StartTypeHandlers
     from backend.internals.settings import Settings
@@ -83,6 +84,7 @@ def _main(
         exit(1)
 
     ExternalClients.trigger_client_registration()
+    DownloadClients.trigger_client_registration()
 
     set_db_location(db_folder)
 

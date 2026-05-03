@@ -8,9 +8,9 @@ from importlib import import_module
 from os.path import basename, dirname, splitext
 from re import IGNORECASE, compile
 from sqlite3 import IntegrityError
-from typing import Any, Dict, List, Mapping, Tuple, Type, Union, cast
+from typing import Any, Dict, List, Mapping, Tuple, Type, TypeVar, Union, cast
 
-import backend.implementations.torrent_clients as tc
+import backend.implementations.external_clients as ec
 from backend.base.custom_exceptions import (ClientNotWorking,
                                             CredentialInvalid,
                                             ExternalClientDownloading,
@@ -190,6 +190,12 @@ class BaseExternalClient(ExternalDownloadClient):
 
 
 # region Clients
+ExternalDownloadClientType = TypeVar(
+    "ExternalDownloadClientType",
+    bound=ExternalDownloadClient
+)
+
+
 class ExternalClients:
     clients: Dict[DownloadType, Dict[str, Type[ExternalDownloadClient]]] = {
         dt: {}
@@ -220,10 +226,20 @@ class ExternalClients:
             client_type (str): The product name of the client (e.g. 'qBittorrent').
             required_tokens (Tuple[ExternalClientField, ...]): The fields that
                 the client needs.
+
+        Raises:
+            RuntimeError: An external client with the given client type is
+                already registered for the download type.
         """
         def wrapper(
-            client_class: Type[ExternalDownloadClient]
-        ) -> Type[ExternalDownloadClient]:
+            client_class: Type[ExternalDownloadClientType]
+        ) -> Type[ExternalDownloadClientType]:
+            if client_type in cls.clients[download_type]:
+                raise RuntimeError(
+                    f"External client with client type {client_type} "
+                    f"(download type {download_type.name}) "
+                    "registered multiple times"
+                )
             cls.clients[download_type][client_type] = client_class
             client_class.download_type = download_type
             client_class.client_type = client_type
@@ -238,13 +254,18 @@ class ExternalClients:
         """
         for file in sorted(
             list_files(
-                dirname(tc.__file__ or '')
+                dirname(ec.__file__ or ''),
+                (".py",)
             ),
             key=lambda f: f.lower()
         ):
-            if file.endswith(".py") and not file.endswith("__init__.py"):
-                module_name = splitext(basename(file))[0]
-                import_module(f"{tc.__name__}.{module_name}")
+            if file.endswith("__init__.py"):
+                continue
+
+            foldername = basename(dirname(file))
+            filename = splitext(basename(file))[0]
+            module_path = f"{ec.__name__}.{foldername}.{filename}"
+            import_module(module_path)
         return
 
     @classmethod

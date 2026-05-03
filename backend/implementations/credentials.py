@@ -24,9 +24,23 @@ class Credentials:
 
     @classmethod
     def register_validator(cls, source: CredentialSource):
+        """Register a validator of credentials for a certain source.
+
+        Args:
+            source (CredentialSource): The credential source.
+
+        Raises:
+            RuntimeError: A credential validator with the given source is
+                already registered.
+        """
         def wrapper(
             validator: Callable[[CredentialData], CredentialData]
         ) -> Callable[[CredentialData], CredentialData]:
+            if source in cls.validators:
+                raise RuntimeError(
+                    f"Credential validator with source {source.value} "
+                    "registered multiple times"
+                )
             cls.validators[source] = validator
             return validator
         return wrapper
