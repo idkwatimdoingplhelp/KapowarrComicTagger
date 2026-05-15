@@ -123,6 +123,9 @@ class Constants:
     FS_API_BASE = "/v1"
     "The base endpoint of the FlareSolverr API"
 
+    FS_RESOLVE_TIMEOUT = 300 # seconds
+    "Timeout for FlareSolverr to solve the challenge"
+
     MAX_CONCURRENT_FS_SESSIONS = 2
     "The maximum amount of FlareSolverr browser sessions that can concurrently run"
 
@@ -639,6 +642,7 @@ class RemoteMappingData(TypedDict):
 class SearchResultData(FilenameData):
     link: str
     display_title: str
+    size: int
     source: str
 
 
@@ -689,6 +693,7 @@ class CVFileMapping(TypedDict):
 
 class DownloadGroup(TypedDict):
     web_sub_title: str
+    size: int
     info: FilenameData
     links: Dict[GCDownloadSource, List[str]]
 

@@ -28,7 +28,8 @@ from backend.base.file_extraction import (extract_filename_data,
                                           refine_special_version)
 from backend.base.helpers import (AsyncSession, check_overlapping_issues,
                                   first_of_range, fix_year, force_range,
-                                  get_torrent_info, normalise_year)
+                                  get_torrent_info, normalise_size,
+                                  normalise_year)
 from backend.base.logging import LOGGER
 from backend.implementations.blocklist import (add_to_blocklist,
                                                blocklist_contains)
@@ -41,6 +42,10 @@ from backend.internals.settings import Settings
 
 mediafire_dd_regex = compile(
     r'https?://download\d+\.mediafire\.com/',
+    IGNORECASE
+)
+size_regex = compile(
+    r'\d+(?:\.\d+)?\s*(?:B|Ki?B|Mi?B|Gi?B|Ti?B)',
     IGNORECASE
 )
 MAX_PAGE_DEPTH = 10
@@ -71,7 +76,7 @@ def _get_page_count(soup: BeautifulSoup) -> int:
 
 def _get_articles(
     soup: BeautifulSoup
-) -> List[Tuple[str, str]]:
+) -> List[Tuple[str, str, int]]:
     """From a GC search result page, extract article (single search result)
     data.
 
@@ -79,10 +84,10 @@ def _get_articles(
         soup (BeautifulSoup): The soup of the GC search result page.
 
     Returns:
-        List[Tuple[str, str]]: The data of the articles. First string of the
-        tuple is the link, second string is the title.
+        List[Tuple[str, str, int]]: The data of the articles. First string is
+        the link, second string is the title, the integer is the byte size.
     """
-    result: List[Tuple[str, str]] = []
+    result: List[Tuple[str, str, int]] = []
     for article in soup.find_all("article", {"class": "post"}):
         title_el = article.find("h1", {"class": "post-title"})
         if not title_el:
@@ -94,7 +99,19 @@ def _get_articles(
 
         link: str = first_of_range(anchor.get('href') or '')
         title = title_el.get_text(strip=True)
-        result.append((link, title))
+
+        size_container = title_el.next_sibling
+        if not isinstance(size_container, Tag):
+            size = 0
+        else:
+            size_p = next(size_container.children, None)
+            if not size_p:
+                size = 0
+            else:
+                size_text = size_p.get_text().split("Size : ")[1]
+                size = normalise_size(size_text)
+
+        result.append((link, title, size))
 
     return result
 
@@ -213,8 +230,17 @@ def __extract_button_links(
             if year:
                 processed_title["year"] = fix_year(year)
 
+        size = 0
+        if "Size :\x00" in extracted_title:
+            size = normalise_size(
+                extracted_title
+                .split("Size :\x00")[1]
+                .strip()
+            )
+
         result: DownloadGroup = {
             "web_sub_title": title,
+            "size": size,
             "info": processed_title,
             "links": {}
         }
@@ -289,8 +315,14 @@ def __extract_list_links(
         if processed_title['special_version'] == 'cover':
             continue
 
+        size = 0
+        size_result = size_regex.search(title)
+        if size_result:
+            size = normalise_size(size_result.group(0))
+
         result: DownloadGroup = {
             "web_sub_title": title,
+            "size": size,
             "info": processed_title,
             "links": {}
         }
@@ -347,13 +379,26 @@ def _get_download_groups(
     download_groups = __extract_button_links(body, torrent_client_available)
     download_groups.extend(__extract_list_links(body, torrent_client_available))
 
-    service_preference = Settings().sv.service_preference
+    settings = Settings().sv
+    service_preference = settings.service_preference
+    avoid_gc_preference = service_preference.copy()
+    avoid_gc_preference.remove(GCDownloadSource.GETCOMICS)
+    avoid_gc_preference.append(GCDownloadSource.GETCOMICS)
+
     for group in download_groups:
         group["links"] = {
             k: v
             for k, v in sorted(
                 group["links"].items(),
-                key=lambda k: service_preference.index(k[0].value)
+                key=lambda k: (
+                    avoid_gc_preference.index(k[0].value)
+
+                    if settings.avoid_large_gc_downloads
+                    and group['size'] >= 400000000
+                    else
+
+                    service_preference.index(k[0].value)
+                )
             )
         }
 
@@ -786,6 +831,7 @@ async def search_getcomics(
             ),
             "link": article[0],
             "display_title": article[1],
+            "size": article[2],
             "source": Constants.GC_SOURCE_TERM
         }
         for soup in (first_soup, *other_soups)
