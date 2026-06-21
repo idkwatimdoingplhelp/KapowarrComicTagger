@@ -10,15 +10,15 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Tuple, Union
 from typing_extensions import assert_never
 
 from backend.base.custom_exceptions import (ClientNotWorking,
-                                            DownloadLimitReached,
-                                            DownloadNotFound,
-                                            DownloadUnmovable,
+                                            DownloadLinkBroken,
+                                            DownloadQueueEntryNotFound,
+                                            DownloadQueueEntryUnmovable,
+                                            DownloadServiceRateLimitReached,
                                             EnqueuingDownloadFailure,
-                                            InvalidKeyValue, IssueNotFound,
-                                            LinkBroken)
+                                            InvalidKeyValue, IssueNotFound)
 from backend.base.definitions import (BlocklistReason, Constants, Download,
-                                      DownloadClientIdentifier, DownloadSource,
-                                      DownloadState,
+                                      DownloadClientIdentifier,
+                                      DownloadService, DownloadState,
                                       EnqueuingDownloadFailureReason,
                                       ExternalDownload, SeedingHandling)
 from backend.base.files import create_folder, delete_file_folder
@@ -70,9 +70,9 @@ class DownloadHandler(metaclass=Singleton):
         try:
             download.run()
 
-        except DownloadLimitReached as e:
+        except DownloadServiceRateLimitReached as e:
             download.stop(DownloadState.FAILED_STATE)
-            if e.source == DownloadSource.MEGA:
+            if e.service == DownloadService.MEGA:
                 self._remove_mega(exclude_id=download.id)
 
         ws.emit(status_event)
@@ -214,13 +214,14 @@ class DownloadHandler(metaclass=Singleton):
             index (int): The new index of the download.
 
         Raises:
-            DownloadNotFound: The ID doesn't map to any download in the queue.
+            DownloadQueueEntryNotFound: The ID doesn't map to any download in
+                the queue.
             DownloadUnmovable: The download is not allowed to be moved.
             InvalidKeyValue: The index is out of bounds.
         """
         download = self.get_one(download_id)
         if download.state != DownloadState.QUEUED_STATE:
-            raise DownloadUnmovable(download_id)
+            raise DownloadQueueEntryUnmovable(download_id)
 
         if index < 0 or index >= len(self.queue):
             raise InvalidKeyValue('index', index)
@@ -287,7 +288,7 @@ class DownloadHandler(metaclass=Singleton):
                         'download_link': download.download_link,
                         'covered_issues': covered_issues,
                         'force_original_name': forced_match,
-                        'source_type': download.source_type.value,
+                        'source_type': download.download_service.value,
                         'source_name': download.source_name,
                         'web_link': download.web_link,
                         'web_title': download.web_title,
@@ -330,7 +331,8 @@ class DownloadHandler(metaclass=Singleton):
             download_id (int): The ID of the download to fetch.
 
         Raises:
-            DownloadNotFound: The ID doesn't map to any download in the queue.
+            DownloadQueueEntryNotFound: The ID doesn't map to any download in
+                the queue.
 
         Returns:
             Download: The queue entry.
@@ -338,7 +340,7 @@ class DownloadHandler(metaclass=Singleton):
         for entry in self.queue:
             if entry.id == download_id:
                 return entry
-        raise DownloadNotFound(download_id)
+        raise DownloadQueueEntryNotFound(download_id)
 
     # region Adding
     def __determine_link_type(self, link: str) -> Union[str, None]:
@@ -429,16 +431,17 @@ class DownloadHandler(metaclass=Singleton):
                 await gcp.load_data()
 
             except EnqueuingDownloadFailure as e:
-                add_to_blocklist(
-                    web_link=link,
-                    web_title=None,
-                    web_sub_title=None,
-                    download_link=None,
-                    source=None,
-                    volume_id=volume_id,
-                    issue_id=issue_id,
-                    reason=BlocklistReason.LINK_BROKEN
-                )
+                if e.reason != EnqueuingDownloadFailureReason.LINK_RATE_LIMITED:
+                    add_to_blocklist(
+                        web_link=link,
+                        web_title=None,
+                        web_sub_title=None,
+                        download_link=None,
+                        download_service=None,
+                        volume_id=volume_id,
+                        issue_id=issue_id,
+                        reason=BlocklistReason.LINK_BROKEN
+                    )
                 LOGGER.warning(
                     f'Unable to extract download links from source; fail_reason="{e.reason.value}"'
                 )
@@ -456,7 +459,7 @@ class DownloadHandler(metaclass=Singleton):
                         web_title=gcp.title,
                         web_sub_title=None,
                         download_link=None,
-                        source=None,
+                        download_service=None,
                         volume_id=volume_id,
                         issue_id=issue_id,
                         reason=BlocklistReason.NO_WORKING_LINKS
@@ -541,7 +544,7 @@ class DownloadHandler(metaclass=Singleton):
                     download_link=download['download_link'],
                     volume_id=download['volume_id'],
                     covered_issues=covered_issues,
-                    source_type=DownloadSource(download['source_type']),
+                    download_service=DownloadService(download['source_type']),
                     source_name=download['source_name'],
                     web_link=download['web_link'],
                     web_title=download['web_title'],
@@ -551,7 +554,7 @@ class DownloadHandler(metaclass=Singleton):
                 )
                 dl_instance.id = download['id']
 
-            except LinkBroken:
+            except DownloadLinkBroken:
                 # Link is broken
 
                 issue_id = None
@@ -566,7 +569,7 @@ class DownloadHandler(metaclass=Singleton):
                     web_title=download['web_title'],
                     web_sub_title=download['web_sub_title'],
                     download_link=download['download_link'],
-                    source=DownloadSource(download['source']),
+                    download_service=DownloadService(download['source_type']),
                     volume_id=download['volume_id'],
                     issue_id=issue_id,
                     reason=BlocklistReason.LINK_BROKEN
@@ -577,7 +580,9 @@ class DownloadHandler(metaclass=Singleton):
                 )
                 continue
 
-            except (DownloadLimitReached, IssueNotFound, ClientNotWorking):
+            except (
+                DownloadServiceRateLimitReached, IssueNotFound, ClientNotWorking
+            ):
                 cursor.execute(
                     "DELETE FROM download_queue WHERE id = ?;",
                     (download['id'],)
@@ -617,7 +622,8 @@ class DownloadHandler(metaclass=Singleton):
                 Defaults to False.
 
         Raises:
-            DownloadNotFound: The ID doesn't map to any download in the queue.
+            DownloadQueueEntryNotFound: The ID doesn't map to any download in
+                the queue.
         """
         LOGGER.info(f'Removing download with id {download_id} and {blocklist=}')
 
@@ -654,7 +660,7 @@ class DownloadHandler(metaclass=Singleton):
                 web_title=download.web_title,
                 web_sub_title=download.web_sub_title,
                 download_link=download.download_link,
-                source=download.source_type,
+                download_service=download.download_service,
                 volume_id=download.volume_id,
                 issue_id=download.issue_id,
                 reason=BlocklistReason.ADDED_BY_USER

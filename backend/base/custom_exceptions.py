@@ -7,7 +7,7 @@ Definitions of exceptions.
 from typing import Any, Union
 
 from backend.base.definitions import (ApiResponse, BrokenClientReason,
-                                      DownloadSource,
+                                      DownloadService,
                                       EnqueuingDownloadFailureReason,
                                       KapowarrException)
 from backend.base.logging import LOGGER
@@ -442,34 +442,13 @@ class TaskNotDeletable(KapowarrException):
 
 
 # region Downloads
-class DownloadNotFound(KapowarrException):
-    "Download with given ID not found"
-
-    def __init__(self, download_id: int) -> None:
-        self.download_id = download_id
-        LOGGER.warning(
-            f"Download with given ID not found: {download_id}"
-        )
-        return
-
-    @property
-    def api_response(self) -> ApiResponse:
-        return {
-            "code": 404,
-            "error": self.__class__.__name__,
-            "result": {
-                "download_id": self.download_id
-            }
-        }
-
-
-class LinkBroken(KapowarrException):
-    "The link is broken"
+class DownloadLinkBroken(KapowarrException):
+    "The download link of a download service is broken"
 
     def __init__(self, link: str) -> None:
         self.link = link
         LOGGER.warning(
-            f"Link is broken: {self.link}"
+            f"Download link is broken: {self.link}"
         )
         return
 
@@ -506,14 +485,14 @@ class EnqueuingDownloadFailure(KapowarrException):
         }
 
 
-class DownloadLimitReached(KapowarrException):
-    "The download limit of the source is reached"
+class DownloadServiceRateLimitReached(KapowarrException):
+    "The rate limit of the download service is reached"
 
-    def __init__(self, source: DownloadSource) -> None:
-        self.source = source
-        self.source_text = source.value
+    def __init__(self, service: DownloadService) -> None:
+        self.service = service
+        self.service_text = service.value
         LOGGER.warning(
-            f"Download source {self.source_text} has reached its download limit"
+            f"Download service {self.service_text} has reached its download limit"
         )
         return
 
@@ -523,18 +502,39 @@ class DownloadLimitReached(KapowarrException):
             "code": 509,
             "error": self.__class__.__name__,
             "result": {
-                "source": self.source.value
+                "service": self.service.value
             }
         }
 
 
-class DownloadUnmovable(KapowarrException):
+class DownloadQueueEntryNotFound(KapowarrException):
+    "A download in the download queue with given ID not found"
+
+    def __init__(self, download_id: int) -> None:
+        self.download_id = download_id
+        LOGGER.warning(
+            f"Download in download queue with given ID not found: {download_id}"
+        )
+        return
+
+    @property
+    def api_response(self) -> ApiResponse:
+        return {
+            "code": 404,
+            "error": self.__class__.__name__,
+            "result": {
+                "download_id": self.download_id
+            }
+        }
+
+
+class DownloadQueueEntryUnmovable(KapowarrException):
     "The position of the download in the queue can not be changed"
 
     def __init__(self, download_id: int) -> None:
         self.download_id = download_id
         LOGGER.warning(
-            f"The position of the download in the queue can not be changed: {download_id}"
+            f"Position of download in download queue with given ID can't be changed: {download_id}"
         )
         return
 
@@ -653,13 +653,13 @@ class ExternalClientDownloading(KapowarrException):
         }
 
 
-# region ComicVine
-class CVRateLimitReached(KapowarrException):
-    "ComicVine API rate limit reached"
+# region Metadata Source
+class MetadataSourceRateLimitReached(KapowarrException):
+    "Rate limit reached of metadata source"
 
     def __init__(self) -> None:
         LOGGER.warning(
-            "Reached the rate limit of ComicVine"
+            "Reached the rate limit of metadata source"
         )
         return
 
@@ -667,24 +667,6 @@ class CVRateLimitReached(KapowarrException):
     def api_response(self) -> ApiResponse:
         return {
             "code": 509,
-            "error": self.__class__.__name__,
-            "result": {}
-        }
-
-
-class InvalidComicVineApiKey(KapowarrException):
-    "No Comic Vine API key is set or it's invalid"
-
-    def __init__(self) -> None:
-        LOGGER.warning(
-            "No Comic Vine API key is set or it's invalid"
-        )
-        return
-
-    @property
-    def api_response(self) -> ApiResponse:
-        return {
-            "code": 400,
             "error": self.__class__.__name__,
             "result": {}
         }
