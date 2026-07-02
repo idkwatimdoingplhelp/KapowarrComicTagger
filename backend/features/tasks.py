@@ -18,7 +18,7 @@ from comictaggerlib.cli import cli_mode as cli
 from flask import Flask
 
 import backend.internals.settings as settings_module
-from backend.base.custom_exceptions import (InvalidComicVineApiKey,
+from backend.base.custom_exceptions import (InvalidKeyValue,
                                             TaskNotDeletable, TaskNotFound)
 from backend.base.helpers import Singleton, get_subclasses
 from backend.base.logging import LOGGER
