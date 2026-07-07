@@ -75,6 +75,12 @@
 				"Search All"
 			) }}
 			{{ icon_button(
+				"metadataall-button",
+				"Trigger a 'add metadata' for all volumes",
+				"add_meta.svg",
+				"Metadata All"
+			) }}
+			{{ icon_button(
 				"massedit-button",
 				"Start mass-editing the volumes",
 				"edit.svg",
@@ -153,6 +159,7 @@
 				</div>
 				<div class="action-divider">
                     <button data-action="update">Refresh & Scan</button>
+					<button data-action="metadata">Add Metadata</button>
                     <button data-action="search">Auto Search</button>
 				</div>
 			</section>

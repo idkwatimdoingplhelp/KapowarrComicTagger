@@ -26,7 +26,7 @@ from backend.features.download_queue import DownloadHandler
 from backend.features.search import auto_search
 from backend.implementations.conversion import mass_convert
 from backend.implementations.naming import mass_rename
-from backend.implementations.volumes import Issue, Volume, refresh_and_scan
+from backend.implementations.volumes import Issue, Volume, refresh_and_scan, get_monitored_cv_ids_and_paths
 from backend.internals.db import close_db, get_db
 from backend.internals.server import (TaskAddedEvent, TaskEndedEvent,
                                       TaskStatusEvent, WebSocket)
@@ -576,11 +576,8 @@ class AddMetadata(Task):
             )
             cli(opts, cmksettngs)
 
-            self.message = f'finishsed updating metadata on {issues[l].title}'
-            WebSocket().emit(TaskStatusEvent(self.message))
-
         LOGGER.info(f'Finished adding metadata to {volume_title}')
-        self.message = f'finishsed updating metadata on {volume_title}'
+        self.message = f'Finished updating metadata on {volume_title}'
         WebSocket().emit(TaskStatusEvent(self.message))
 
         return
@@ -672,6 +669,88 @@ class SearchAll(Task):
                     for result in results
                 ]
         return downloads
+
+
+class MetaDataAll(Task):
+    "adding metadata to all volumes in the library"
+
+    stop = False
+    message = ''
+    action = 'metadata_all'
+    display_title = 'Metadata All'
+    category = ''
+
+    @property
+    def volume_id(self) -> None:
+        return None
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self, allow_skipping: bool = False) -> None:
+        """Create the task
+
+        Args:
+            allow_skipping (bool, optional): Skip volumes that have been updated in the last 24 hours.
+                Defaults to False.
+        """
+        self.allow_skipping = allow_skipping
+        return
+
+    def run(self) -> None:
+        self.message = f'Adding metadata on all volumes'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        try:
+            issues_paths = get_monitored_cv_ids_and_paths()
+            cmksettngs = settings.ComicTaggerSettings(None)
+            cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
+            cmksettngs.save()
+            for i in issues_paths:
+                path = i[1]
+                id = i[0]
+                opts = argparse.Namespace(
+                    file_list=[path],
+                    issue_id=id,
+                    save=True,
+                    online=True,
+                    overwrite=True,
+                    auto_imprint=False,
+                    dryrun=False,
+                    delete=False,
+                    rename=False,
+                    copy=None,
+                    no_overwrite=False,
+                    abort_on_low_confidence=True,
+                    wait_on_cv_rate_limit=False,
+                    print=False,
+                    terse=False,
+                    raw=False,
+                    type=[1],  # CIX (ComicRack)
+                    metadata=GenericMetadata(),
+                    parse_filename=True,
+                    split_words=False,
+                    export_to_zip=False,
+                    delete_after_zip_export=False,
+                    abort_on_conflict=False,
+                    interactive=False,
+                    rename_move_dir=False,
+                    show_save_summary=True,
+                    assume_issue_one=True,
+                    verbose=False
+                )
+                cli(opts, cmksettngs)
+
+        except InvalidKeyValue:
+            # API key invalid
+            pass
+
+        LOGGER.info(f'Finished adding metadata to all volumes')
+        self.message = f'Finished updating metadata on all volumes'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        return
 
 
 # =====================

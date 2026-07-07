@@ -1666,3 +1666,19 @@ def delete_issue_file(file_id: int) -> None:
     FilesDB.delete_file(file_id)
 
     return
+
+
+# region metadata
+
+def get_monitored_cv_ids_and_paths() -> List[Tuple[int, str]]:
+    """Get comicvine_id and filepath for all monitored, downloaded issues."""
+    return get_db().execute("""
+        SELECT i.comicvine_id, f.filepath
+        FROM issues i
+        INNER JOIN issues_files if
+            ON i.id = if.issue_id
+        INNER JOIN files f
+            ON if.file_id = f.id
+        WHERE i.monitored = 1;
+        """
+    ).fetchall()

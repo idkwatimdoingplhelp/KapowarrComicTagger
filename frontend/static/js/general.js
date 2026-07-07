@@ -99,6 +99,11 @@ function mapButtons(id) {
 			'icon': `${url_base}/static/img/refresh.svg`,
 			'loading_icon': `${url_base}/static/img/loading.svg`
 		};
+		task_to_button['metadata_all'] = {
+			'button': document.querySelector('#metadataall-button'),
+			'icon': `${url_base}/static/img/add_meta.svg`,
+			'loading_icon': `${url_base}/static/img/loading.svg`
+		};		
 
 	} else if (window.location.pathname === (url_base + '/system/tasks')) {
 		document.querySelectorAll('.task-interval-table > tbody > tr').forEach(entry => {
