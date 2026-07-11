@@ -20,8 +20,7 @@ from backend.base.custom_exceptions import (ClientNotWorking,
                                             FolderNotFound, InvalidKeyValue,
                                             InvalidSettingModification,
                                             KeyNotFound)
-from backend.base.definitions import (BaseEnum, Constants, DateType,
-                                      FileDate, GCDownloadService,
+from backend.base.definitions import (BaseEnum, Constants, DateType, FileDate,
                                       OSType, ProxyType, SeedingHandling)
 from backend.base.files import (are_folders_colliding, folder_path,
                                 uppercase_drive_letter)
@@ -114,10 +113,6 @@ class PublicSettingsValues:
     extract_issue_ranges: bool = False
     format_preference: CommaList = field(default_factory=lambda: CommaList(''))
 
-    service_preference: CommaList = field(default_factory=lambda: CommaList(
-        (s.value for s in GCDownloadService._member_map_.values())
-    ))
-    avoid_large_gc_downloads: bool = False
     download_folder: str = folder_path('temp_downloads')
     concurrent_direct_downloads: int = 1
     failing_download_timeout: int = 0
@@ -544,22 +539,6 @@ class Settings(metaclass=Singleton):
 
             converted_value = value
 
-        elif key == 'service_preference':
-            available = [
-                s.value
-                for s in GCDownloadService._member_map_.values()
-            ]
-
-            for entry in value:
-                if entry not in available:
-                    raise InvalidKeyValue(key, value)
-
-            for entry in available:
-                if entry not in value:
-                    raise InvalidKeyValue(key, value)
-
-            converted_value = value
-
         elif key == 'flaresolverr_base_url':
             from backend.implementations.flaresolverr import FlareSolverr
 
@@ -599,7 +578,7 @@ class Settings(metaclass=Singleton):
             InvalidKeyValue: Value of the key is not allowed.
         """
         settings_after_update = SettingsValues(**{
-            **self.get_settings().todict(),
+            **self.get_settings().todict(to_public=False),
             **formatted_data
         })
 
