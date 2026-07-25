@@ -1222,6 +1222,8 @@ def _migrate_blocklist_source_to_download_service():
             RENAME COLUMN source TO download_service;
     """)
 
+    return
+
 
 @DatabaseMigrationHandler.register_handler(47)
 def _migrate_add_gc_indexer() -> None:
@@ -1229,10 +1231,6 @@ def _migrate_add_gc_indexer() -> None:
 
     service_preference = cursor.execute(
         "SELECT value FROM config WHERE key = 'service_preference';"
-    ).exists()
-
-    avoid_large_downloads = cursor.execute(
-        "SELECT value FROM config WHERE key = 'avoid_large_gc_downloads';"
     ).exists()
 
     get_db().execute("""
@@ -1257,15 +1255,21 @@ def _migrate_add_gc_indexer() -> None:
             "title": "GetComics",
             "url": "https://getcomics.org",
             "gc_service_preference": service_preference,
-            "gc_avoid_large_downloads": avoid_large_downloads
+            "gc_avoid_large_downloads": False
         }
     )
 
     cursor.execute(
         "DELETE FROM config WHERE key = 'service_preference';"
     )
-    cursor.execute(
-        "DELETE FROM config WHERE key = 'avoid_large_gc_downloads';"
+
+    return
+
+
+@DatabaseMigrationHandler.register_handler(48)
+def _migrate_fix_avoid_large_downloads() -> None:
+    get_db().execute(
+        "UPDATE indexer_clients SET gc_avoid_large_downloads=0;"
     )
 
     return

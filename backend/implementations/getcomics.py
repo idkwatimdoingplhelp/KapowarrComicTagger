@@ -21,7 +21,7 @@ from backend.base.custom_exceptions import (DownloadLinkBroken,
 from backend.base.definitions import (GC_DOWNLOAD_SERVICE_TERMS,
                                       BlocklistReason, Download,
                                       DownloadClientIdentifier, DownloadGroup,
-                                      DownloadType,
+                                      DownloadService, DownloadType,
                                       EnqueuingDownloadFailureReason,
                                       GCDownloadService, SpecialVersion)
 from backend.base.file_extraction import (extract_filename_data,
@@ -353,6 +353,9 @@ def __sort_link_paths(p: List[DownloadGroup]) -> Tuple[float, int]:
     Returns:
         Tuple[float, int]: The rating (lower is better).
     """
+    if not p:
+        return (float('inf'), 1)
+
     if p[0]['info']['special_version']:
         return (0.0, 0)
 
@@ -364,6 +367,10 @@ def __sort_link_paths(p: List[DownloadGroup]) -> Tuple[float, int]:
         for entry in p
         if entry["info"]["issue_number"] is not None
     )
+
+    if not issues_covered:
+        # No entries have issue numbers
+        return (float('inf'), 1)
 
     return (1 / issues_covered, len(p))
 
@@ -467,6 +474,7 @@ async def __purify_link(
 
     Raises:
         DownloadLinkBroken: Link is invalid, not supported or broken.
+        DownloadServiceRateLimitReached: We're rate limited by the service.
         ClientError: Failed to fetch link.
 
     Returns:
@@ -483,8 +491,13 @@ async def __purify_link(
 
     async with AsyncSession() as session:
         r = await session.get(link)
+
+    if r.status == 429 and download_service == GCDownloadService.GETCOMICS:
+        raise DownloadServiceRateLimitReached(DownloadService.GETCOMICS)
+
     if not r.ok:
         raise DownloadLinkBroken(link)
+
     url = str(r.real_url)
     content_type = r.headers.getone("Content-Type", "")
 
@@ -592,7 +605,11 @@ async def __purify_download_group(
                 continue
 
             except ClientError:
-                # Page blocked by CF and FS not setup
+                # Link blocked by CF and FS not setup
+                continue
+
+            except DownloadServiceRateLimitReached:
+                # Link is rate limited so just go to the next one
                 continue
 
             try:
