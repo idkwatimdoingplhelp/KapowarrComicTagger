@@ -1,781 +1,67 @@
 # -*- coding: utf-8 -*-
 
-"""
-Background tasks and their handling
-"""
-
 from __future__ import annotations
 
 import argparse
-from abc import ABC, abstractmethod
-from threading import Thread, Timer
 from time import sleep, time
-from typing import Dict, List, Tuple, Type, Union
+from typing import TYPE_CHECKING, Dict, List, Tuple, Type, TypeVar, Union
 
 from comicapi.genericmetadata import GenericMetadata
 from comictaggerlib import settings
 from comictaggerlib.cli import cli_mode as cli
-from flask import Flask
 
 import backend.internals.settings as settings_module
 from backend.base.custom_exceptions import (InvalidKeyValue,
                                             TaskNotDeletable, TaskNotFound)
-from backend.base.helpers import Singleton, get_subclasses
+from backend.base.definitions import Task
+from backend.base.helpers import Singleton
 from backend.base.logging import LOGGER
 from backend.features.download_queue import DownloadHandler
 from backend.features.search import auto_search
 from backend.implementations.conversion import mass_convert
 from backend.implementations.naming import mass_rename
-from backend.implementations.volumes import Issue, Volume, refresh_and_scan, get_monitored_cv_ids_and_paths
-from backend.internals.db import close_db, get_db
-from backend.internals.server import (TaskAddedEvent, TaskEndedEvent,
+from backend.implementations.volumes import (Issue, Volume,
+                                             get_monitored_cv_ids_and_paths,
+                                             refresh_and_scan)
+from backend.internals.db import get_db
+from backend.internals.server import (Server, TaskAddedEvent, TaskEndedEvent,
                                       TaskStatusEvent, WebSocket)
 
-
-class Task(ABC):
-    stop: bool
-    message: str
-    action: str
-    display_title: str
-    category: str
-
-    @property
-    @abstractmethod
-    def volume_id(self) -> Union[int, None]:
-        ...
-
-    @property
-    @abstractmethod
-    def issue_id(self) -> Union[int, None]:
-        ...
-
-    @abstractmethod
-    def __init__(self, **kwargs) -> None:
-        ...
-
-    @abstractmethod
-    def run(self) -> Union[None, List[Tuple[str, int, Union[int, None]]]]:
-        """Run the task
-
-        Returns:
-            Union[None, List[Tuple[str, int, Union[int, None]]]]:
-            Either `None` if the task has no result or
-            `List[Tuple[str, int, Union[int, None]]]` if the task returns
-            search results.
-        """
-        ...
-
-# =====================
-# Issue tasks
-# =====================
-
-
-class AutoSearchIssue(Task):
-    "Do an automatic search for an issue"
-
-    stop = False
-    message = ''
-    action = 'auto_search_issue'
-    display_title = 'Auto Search'
-    category = 'download'
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> int:
-        return self._issue_id
-
-    def __init__(self, volume_id: int, issue_id: int) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The id of the volume in which the issue is
-            issue_id (int): The id of the issue to search for
-        """
-        self._volume_id = volume_id
-        self._issue_id = issue_id
-        return
-
-    def run(self) -> List[Tuple[str, int, Union[int, None]]]:
-        volume = Volume(self._volume_id)
-        volume_title = volume.vd.title
-        issue_number = volume.get_issue(self._issue_id).get_data().issue_number
-        self.message = f'Searching for {volume_title} #{issue_number}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        # Get search results and download them
-        results = auto_search(self._volume_id, self._issue_id)
-        if results:
-            return [
-                (result['link'], self._volume_id, self._issue_id)
-                for result in results
-            ]
-        return []
-
-
-class MassRenameIssue(Task):
-    "Trigger a mass rename for an issue"
-
-    stop = False
-    message = ''
-    action = 'mass_rename_issue'
-    display_title = 'Mass Rename'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> int:
-        return self._issue_id
-
-    def __init__(
-        self,
-        volume_id: int,
-        issue_id: int,
-        filepath_filter: List[str] = []
-    ) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The ID of the volume for which to perform the task.
-            issue_id (int): The ID of the issue for which to perform the task.
-            filepath_filter (List[str], optional): Only rename files in this
-            list.
-                Defaults to [].
-        """
-        self._volume_id = volume_id
-        self._issue_id = issue_id
-        self.filepath_filter = filepath_filter
-        return
-
-    def run(self) -> None:
-        volume = Volume(self._volume_id)
-        volume_title = volume.vd.title
-        issue_number = volume.get_issue(self._issue_id).get_data().issue_number
-        self.message = f'Renaming files for {volume_title} #{issue_number}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        mass_rename(
-            self._volume_id,
-            self._issue_id,
-            filepath_filter=self.filepath_filter,
-            update_websocket=True
-        )
-
-        return
-
-
-class MassConvertIssue(Task):
-    "Trigger a mass convert for an issue"
-
-    stop = False
-    message = ''
-    action = 'mass_convert_issue'
-    display_title = 'Mass Convert'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> int:
-        return self._issue_id
-
-    def __init__(
-        self,
-        volume_id: int,
-        issue_id: int,
-        filepath_filter: List[str] = []
-    ) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The ID of the volume for which to perform the task.
-            issue_id (int): The ID of the issue for which to perform the task.
-            filepath_filter (List[str], optional): Only rename files in this
-            list.
-                Defaults to [].
-        """
-        self._volume_id = volume_id
-        self._issue_id = issue_id
-        self.filepath_filter = filepath_filter
-        return
-
-    def run(self) -> None:
-        volume = Volume(self._volume_id)
-        volume_title = volume.vd.title
-        issue_number = volume.get_issue(self._issue_id).get_data().issue_number
-        self.message = f'Converting files for {volume_title} #{issue_number}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        mass_convert(
-            self._volume_id,
-            self._issue_id,
-            filepath_filter=self.filepath_filter,
-            update_websocket_progress=True,
-            update_websocket_files=True
-        )
-
-        return
-
-
-class AddMetaDataForIssue(Task):
-    "Add ComicRack metadata to files in an issue"
-
-    stop = False
-    message = ''
-    action = 'add_metadata_issue'
-    display_title = 'Add Metadata'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> int:
-        return self._issue_id
-
-    def __init__(
-        self,
-        volume_id: int,
-        issue_id: int,
-        filepath_filter: List[str] = []
-    ) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The ID of the volume for which to perform the task.
-            issue_id (int): The ID of the issue for which to perform the task.
-            filepath_filter (List[str], optional): Only rename files in this
-            list.
-                Defaults to [].
-        """
-        self._volume_id = volume_id
-        self._issue_id = issue_id
-        self.filepath_filter = filepath_filter
-        return
-
-    def run(self) -> None:
-
-        volume_title = Volume(self._volume_id).vd.title
-        issue_number = Issue(self._issue_id).get_data().issue_number
-        issue_path = Issue(self._issue_id).get_data().files[0]["filepath"]
-        cv_id = Issue(self._issue_id).get_data().comicvine_id
-        self.message = f'Adding Metadata to {volume_title} #{issue_number}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        cmksettngs = settings.ComicTaggerSettings(None)
-        cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
-        cmksettngs.save()
-
-        opts = argparse.Namespace(
-            file_list=[issue_path],
-            issue_id=cv_id,
-            save=True,
-            online=True,
-            overwrite=True,
-            auto_imprint=False,
-            dryrun=False,
-            delete=False,
-            rename=False,
-            copy=None,
-            no_overwrite=False,
-            abort_on_low_confidence=True,
-            wait_on_cv_rate_limit=False,
-            print=False,
-            terse=False,
-            raw=False,
-            type=[1],  # CIX (ComicRack)
-            metadata=GenericMetadata(),
-            parse_filename=True,
-            split_words=False,
-            export_to_zip=False,
-            delete_after_zip_export=False,
-            abort_on_conflict=False,
-            interactive=False,
-            rename_move_dir=False,
-            show_save_summary=True,
-            assume_issue_one=True,
-            verbose=False
-        )
-        cli(opts, cmksettngs)
-
-        self.message = f'finishsed updating metadata on {volume_title}  #{issue_number} '
-        WebSocket().emit(TaskStatusEvent(self.message))
-        return
-# =====================
-# Volume tasks
-# =====================
-
-
-class AutoSearchVolume(Task):
-    "Do an automatic search for a volume"
-
-    stop = False
-    message = ''
-    action = 'auto_search'
-    display_title = 'Auto Search'
-    category = 'download'
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(self, volume_id: int) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The id of the volume to search for
-        """
-        self._volume_id = volume_id
-        return
-
-    def run(self) -> List[Tuple[str, int, Union[int, None]]]:
-        volume_title = Volume(self._volume_id).vd.title
-        self.message = f'Searching for {volume_title}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        # Get search results and download them
-        results = auto_search(self._volume_id)
-        if results:
-            return [
-                (result['link'], self._volume_id, None)
-                for result in results
-            ]
-        return []
-
-
-class RefreshAndScanVolume(Task):
-    "Trigger a refresh and scan for a volume"
-
-    stop = False
-    message = ''
-    action = 'refresh_and_scan'
-    display_title = 'Refresh And Scan'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(self, volume_id: int) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The id of the volume for which to perform the task
-        """
-        self._volume_id = volume_id
-        return
-
-    def run(self) -> None:
-        volume_title = Volume(self._volume_id).vd.title
-        self.message = f'Updating info on {volume_title}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        try:
-            refresh_and_scan(self._volume_id, update_websocket=True)
-        except InvalidKeyValue:
-            # API key invalid
-            pass
-
-        return
-
-
-class MassRenameVolume(Task):
-    "Trigger a mass rename for a volume"
-
-    stop = False
-    message = ''
-    action = 'mass_rename'
-    display_title = 'Mass Rename'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(
-        self,
-        volume_id: int,
-        filepath_filter: List[str] = []
-    ) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The ID of the volume for which to perform the task.
-            filepath_filter (List[str], optional): Only rename files in this
-            list.
-                Defaults to [].
-        """
-        self._volume_id = volume_id
-        self.filepath_filter = filepath_filter
-        return
-
-    def run(self) -> None:
-        volume_title = Volume(self._volume_id).vd.title
-        self.message = f'Renaming files for {volume_title}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        mass_rename(
-            self._volume_id,
-            filepath_filter=self.filepath_filter,
-            update_websocket=True
-        )
-
-        return
-
-
-class MassConvertVolume(Task):
-    "Trigger a mass convert for a volume"
-
-    stop = False
-    message = ''
-    action = 'mass_convert'
-    display_title = 'Mass Convert'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(
-        self,
-        volume_id: int,
-        filepath_filter: List[str] = []
-    ) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The ID of the volume for which to perform the task.
-            filepath_filter (List[str], optional): Only convert files in this
-            list.
-                Defaults to [].
-        """
-        self._volume_id = volume_id
-        self.filepath_filter = filepath_filter
-        return
-
-    def run(self) -> None:
-        volume_title = Volume(self._volume_id).vd.title
-        self.message = f'Converting files for {volume_title}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        mass_convert(
-            self._volume_id,
-            filepath_filter=self.filepath_filter,
-            update_websocket_progress=True,
-            update_websocket_files=True
-        )
-
-        return
-
-
-class AddMetadata(Task):
-    "Add ComicRack metadata to files in a volume"
-
-    stop = False
-    message = ''
-    action = 'add_metadata'
-    display_title = 'Add Metadata'
-    category = ''
-
-    @property
-    def volume_id(self) -> int:
-        return self._volume_id
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(self, volume_id: int) -> None:
-        """Create the task
-
-        Args:
-            volume_id (int): The ID of the volume for which to add metadata
-        """
-        self._volume_id = volume_id
-        return
-
-    def run(self) -> None:
-
-        volume_title = Volume(self._volume_id).vd.title
-        issues = Volume(self._volume_id).get_issues()
-        cv_id_list = []
-        all_paths = []
-
-        for i in issues:
-            if not (len(i.files) == 0):
-                cv_id_list.append(i.comicvine_id)
-                path = i.files[0]["filepath"]
-                all_paths.append(path)
-
-        LOGGER.info(f'Started adding metadata to {volume_title}')
-        self.message = f'Started adding metadata to {volume_title}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        cmksettngs = settings.ComicTaggerSettings(None)
-        cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
-        cmksettngs.save()
-
-        for l in range(len(all_paths)):
-
-            self.message = f'Updating metadata on {issues[l].title}'
-            WebSocket().emit(TaskStatusEvent(self.message))
-
-            opts = argparse.Namespace(
-                file_list=[all_paths[l]],
-                issue_id=cv_id_list[l],
-                save=True,
-                online=True,
-                overwrite=True,
-                auto_imprint=False,
-                dryrun=False,
-                delete=False,
-                rename=False,
-                copy=None,
-                no_overwrite=False,
-                abort_on_low_confidence=True,
-                wait_on_cv_rate_limit=False,
-                print=False,
-                terse=False,
-                raw=False,
-                type=[1],  # CIX (ComicRack)
-                metadata=GenericMetadata(),
-                parse_filename=True,
-                split_words=False,
-                export_to_zip=False,
-                delete_after_zip_export=False,
-                abort_on_conflict=False,
-                interactive=False,
-                rename_move_dir=False,
-                show_save_summary=True,
-                assume_issue_one=True,
-                verbose=False
-            )
-            cli(opts, cmksettngs)
-
-        LOGGER.info(f'Finished adding metadata to {volume_title}')
-        self.message = f'Finished updating metadata on {volume_title}'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        return
-# =====================
-# Library tasks
-# =====================
-
-
-class UpdateAll(Task):
-    "Trigger a refresh and scan for each volume in the library"
-
-    stop = False
-    message = ''
-    action = 'update_all'
-    display_title = 'Update All'
-    category = ''
-
-    @property
-    def volume_id(self) -> None:
-        return None
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(self, allow_skipping: bool = False) -> None:
-        """Create the task
-
-        Args:
-            allow_skipping (bool, optional): Skip volumes that have been updated in the last 24 hours.
-                Defaults to False.
-        """
-        self.allow_skipping = allow_skipping
-        return
-
-    def run(self) -> None:
-        self.message = f'Updating info on all volumes'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        try:
-            refresh_and_scan(
-                update_websocket=True,
-                allow_skipping=self.allow_skipping
-            )
-        except InvalidKeyValue:
-            # API key invalid
-            pass
-
-        return
-
-
-class SearchAll(Task):
-    "Trigger an automatic search for each volume in the library"
-
-    stop = False
-    message = ''
-    action = 'search_all'
-    display_title = 'Search All'
-    category = 'download'
-
-    @property
-    def volume_id(self) -> None:
-        return None
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(self) -> None:
-        return
-
-    def run(self) -> List[Tuple[str, int, Union[int, None]]]:
-        cursor = get_db(force_new=True)
-        cursor.execute(
-            "SELECT id, title FROM volumes WHERE monitored = 1;"
-        )
-        downloads: List[Tuple[str, int, Union[int, None]]] = []
-        ws = WebSocket()
-        for volume_id, volume_title in cursor:
-            if self.stop:
-                break
-            self.message = f'Searching for {volume_title}'
-            ws.emit(TaskStatusEvent(self.message))
-            # Get search results and download them
-            results = auto_search(volume_id)
-            if results:
-                downloads += [
-                    (result['link'], volume_id, None)
-                    for result in results
-                ]
-        return downloads
-
-
-class MetaDataAll(Task):
-    "adding metadata to all volumes in the library"
-
-    stop = False
-    message = ''
-    action = 'metadata_all'
-    display_title = 'Metadata All'
-    category = ''
-
-    @property
-    def volume_id(self) -> None:
-        return None
-
-    @property
-    def issue_id(self) -> None:
-        return None
-
-    def __init__(self, allow_skipping: bool = False) -> None:
-        """Create the task
-
-        Args:
-            allow_skipping (bool, optional): Skip volumes that have been updated in the last 24 hours.
-                Defaults to False.
-        """
-        self.allow_skipping = allow_skipping
-        return
-
-    def run(self) -> None:
-        self.message = f'Adding metadata on all volumes'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        try:
-            issues_paths = get_monitored_cv_ids_and_paths()
-            cmksettngs = settings.ComicTaggerSettings(None)
-            cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
-            cmksettngs.save()
-            for i in issues_paths:
-                path = i[1]
-                id = i[0]
-                opts = argparse.Namespace(
-                    file_list=[path],
-                    issue_id=id,
-                    save=True,
-                    online=True,
-                    overwrite=True,
-                    auto_imprint=False,
-                    dryrun=False,
-                    delete=False,
-                    rename=False,
-                    copy=None,
-                    no_overwrite=False,
-                    abort_on_low_confidence=True,
-                    wait_on_cv_rate_limit=False,
-                    print=False,
-                    terse=False,
-                    raw=False,
-                    type=[1],  # CIX (ComicRack)
-                    metadata=GenericMetadata(),
-                    parse_filename=True,
-                    split_words=False,
-                    export_to_zip=False,
-                    delete_after_zip_export=False,
-                    abort_on_conflict=False,
-                    interactive=False,
-                    rename_move_dir=False,
-                    show_save_summary=True,
-                    assume_issue_one=True,
-                    verbose=False
-                )
-                cli(opts, cmksettngs)
-
-        except InvalidKeyValue:
-            # API key invalid
-            pass
-
-        LOGGER.info(f'Finished adding metadata to all volumes')
-        self.message = f'Finished updating metadata on all volumes'
-        WebSocket().emit(TaskStatusEvent(self.message))
-
-        return
-
-
-# =====================
-# Task handling
-# =====================
-# Maps action attr to class for all tasks
-# Only works for classes that directly inherit from Task
-task_library: Dict[str, Type[Task]] = {
-    c.action: c
-    for c in get_subclasses(Task)
-}
+if TYPE_CHECKING:
+    from threading import Timer
+
+
+# region Task Handler
+TaskType = TypeVar(
+    "TaskType",
+    bound=Task
+)
 
 
 class TaskHandler(metaclass=Singleton):
-    "Note: Singleton"
+    tasks: Dict[str, Type[Task]] = {}
 
     queue: List[dict] = []
     task_interval_waiter: Union[Timer, None] = None
 
-    def __init__(self) -> None:
-        """Setup the handler"""
-        handler_context = Flask('handler')
-        handler_context.teardown_appcontext(close_db)
-        self.context = handler_context.app_context
-        return
+    @classmethod
+    def register_task(cls, identifier: str):
+        def wrapper(action: Type[TaskType]) -> Type[TaskType]:
+            if identifier in cls.tasks:
+                raise RuntimeError(
+                    f"Task with {identifier=} registered multiple times"
+                )
+            action.action = identifier
+            cls.tasks[identifier] = action
+            return action
+        return wrapper
+
+    @classmethod
+    def get_task_class(cls, identifier: str) -> Type[Task]:
+        try:
+            return cls.tasks[identifier]
+        except KeyError:
+            raise TaskNotFound(identifier)
 
     def __run_task(self, task: Task) -> None:
         """Run a task
@@ -784,39 +70,39 @@ class TaskHandler(metaclass=Singleton):
             task (Task): The task to run
         """
         LOGGER.debug(f'Running task {task.display_title}')
-        with self.context():
-            socket = WebSocket()
-            try:
-                result = task.run()
-                cursor = get_db()
 
-                # Note in history
-                cursor.execute(
-                    "INSERT INTO task_history VALUES (?,?,?);",
-                    (task.action, task.display_title, round(time()))
-                )
+        socket = WebSocket()
+        try:
+            result = task.run()
+            cursor = get_db()
 
-                if not task.stop:
-                    if task.category == 'download' and result:
-                        DownloadHandler().add_multiple(
-                            (link, volume_id, issue_id, False)
-                            for link, volume_id, issue_id in result
-                        )
+            # Note in history
+            cursor.execute(
+                "INSERT INTO task_history VALUES (?,?,?);",
+                (task.action, task.display_title, round(time()))
+            )
 
-                    LOGGER.info(f'Finished task {task.display_title}')
+            if not task.stop:
+                if task.category == 'download' and result:
+                    DownloadHandler().add_multiple(
+                        (link, indexer_id, volume_id, issue_id, False)
+                        for link, indexer_id, volume_id, issue_id in result
+                    )
 
-            except Exception:
-                LOGGER.exception(
-                    'An error occured while trying to run a task: ')
-                task.message = 'AN ERROR OCCURED'
-                socket.emit(TaskStatusEvent(task.message))
-                sleep(1.5)
+                LOGGER.info(f'Finished task {task.display_title}')
 
-            finally:
-                if not task.stop:
-                    socket.emit(TaskEndedEvent(task))
-                    self.queue.pop(0)
-                    self._process_queue()
+        except Exception:
+            LOGGER.exception(
+                'An error occured while trying to run a task: ')
+            task.message = 'AN ERROR OCCURED'
+            socket.emit(TaskStatusEvent(task.message))
+            sleep(1.5)
+
+        finally:
+            if not task.stop:
+                socket.emit(TaskEndedEvent(task))
+                self.queue.pop(0)
+                self._process_queue()
 
         return
 
@@ -850,10 +136,10 @@ class TaskHandler(metaclass=Singleton):
             'task': task,
             'id': id,
             'status': 'queued',
-            'thread': Thread(
+            'thread': Server().get_db_thread(
                 target=self.__run_task,
-                args=(task,),
-                name=f"TaskThread-{id}"
+                name=f"TaskThread-{id}",
+                args=(task,)
             )
         }
         self.queue.append(task_data)
@@ -882,44 +168,45 @@ class TaskHandler(metaclass=Singleton):
     def __check_intervals(self) -> None:
         "Check if any interval task needs to be run and add to queue if so"
         LOGGER.debug('Checking task intervals')
-        with self.context():
-            current_time = time()
+        current_time = time()
 
-            cursor = get_db()
-            interval_tasks = cursor.execute(
-                "SELECT task_name, interval, next_run FROM task_intervals;"
-            ).fetchall()
-            LOGGER.debug(f'Task intervals: {list(map(dict, interval_tasks))}')
-            for task in interval_tasks:
-                if task['next_run'] <= current_time:
-                    # Add task to queue
-                    task_class = task_library[task['task_name']]
-                    if task_class is UpdateAll:
-                        inst = task_class(allow_skipping=True)
-                    else:
-                        inst = task_class()
-                    self.add(inst)
+        cursor = get_db()
+        interval_tasks = cursor.execute(
+            "SELECT task_name, interval, next_run FROM task_intervals;"
+        ).fetchall()
+        LOGGER.debug(f'Task intervals: {list(map(dict, interval_tasks))}')
+        for task in interval_tasks:
+            if task['next_run'] <= current_time:
+                # Add task to queue
+                TaskClass = self.tasks[task['task_name']]
+                if TaskClass is UpdateAll:
+                    inst = TaskClass(allow_skipping=True)
+                else:
+                    inst = TaskClass()
+                self.add(inst)
 
-                    # Update next_run
-                    next_run = round(current_time + task['interval'])
-                    cursor.execute(
-                        "UPDATE task_intervals SET next_run = ? WHERE task_name = ?;",
-                        (next_run, task['task_name']))
+                # Update next_run
+                next_run = round(current_time + task['interval'])
+                cursor.execute(
+                    "UPDATE task_intervals SET next_run = ? WHERE task_name = ?;",
+                    (next_run, task['task_name']))
 
         self.handle_intervals()
         return
 
     def handle_intervals(self) -> None:
         "Find next time an interval task needs to be run"
-        with self.context():
-            next_run = get_db().execute(
-                "SELECT MIN(next_run) FROM task_intervals"
-            ).fetchone()[0]
+        next_run: int = get_db().execute(
+            "SELECT MIN(next_run) FROM task_intervals"
+        ).fetchone()[0]
         timedelta = next_run - round(time()) + 1
         LOGGER.debug(f'Next interval task is in {timedelta} seconds')
 
-        self.task_interval_waiter = Timer(timedelta, self.__check_intervals)
-        self.task_interval_waiter.name = "TaskIntervalThread"
+        self.task_interval_waiter = Server().get_db_timer_thread(
+            interval=timedelta,
+            target=self.__check_intervals,
+            name="TaskIntervalThread"
+        )
         self.task_interval_waiter.start()
         return
 
@@ -1021,7 +308,35 @@ class TaskHandler(metaclass=Singleton):
         WebSocket().emit(TaskEndedEvent(task['task']))
         return
 
+    def get_task_planning(self) -> List[dict]:
+        """Get the planning of each interval task (interval, next run and last run)
 
+        Returns:
+            List[dict]: List of interval tasks and their planning
+        """
+        tasks = get_db().execute(
+            """
+            SELECT
+                i.task_name, interval, next_run, run_at AS last_run
+            FROM task_intervals i
+            LEFT JOIN (
+                SELECT
+                    task_name,
+                    MAX(run_at) AS run_at
+                FROM task_history
+                GROUP BY task_name
+            ) h
+            ON i.task_name = h.task_name;
+            """
+        ).fetchalldict()
+
+        for t in tasks:
+            t['display_name'] = self.tasks[t['task_name']].display_title
+
+        return tasks
+
+
+# region History
 def get_task_history(offset: int = 0) -> List[dict]:
     """Get the task history in blocks of 50.
 
@@ -1055,29 +370,681 @@ def delete_task_history() -> None:
     return
 
 
-def get_task_planning() -> List[dict]:
-    """Get the planning of each interval task (interval, next run and last run)
+# region Issue tasks
+@TaskHandler.register_task('auto_search_issue')
+class AutoSearchIssue(Task):
+    "Do an automatic search for an issue"
 
-    Returns:
-        List[dict]: List of interval tasks and their planning
-    """
-    tasks = get_db().execute(
+    stop = False
+    message = ''
+    display_title = 'Auto Search'
+    category = 'download'
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> int:
+        return self._issue_id
+
+    def __init__(self, volume_id: int, issue_id: int) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The id of the volume in which the issue is
+            issue_id (int): The id of the issue to search for
         """
-        SELECT
-            i.task_name, interval, next_run, run_at AS last_run
-        FROM task_intervals i
-        LEFT JOIN (
-            SELECT
-                task_name,
-                MAX(run_at) AS run_at
-            FROM task_history
-            GROUP BY task_name
-        ) h
-        ON i.task_name = h.task_name;
+        self._volume_id = volume_id
+        self._issue_id = issue_id
+        return
+
+    def run(self) -> List[Tuple[str, int, int, Union[int, None]]]:
+        volume = Volume(self._volume_id)
+        volume_title = volume.vd.title
+        issue_number = volume.get_issue(self._issue_id).get_data().issue_number
+        self.message = f'Searching for {volume_title} #{issue_number}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        # Get search results and download them
+        results = auto_search(self._volume_id, self._issue_id)
+        if results:
+            return [
+                (result['link'], result["indexer_id"], self._volume_id, self._issue_id)
+                for result in results
+            ]
+        return []
+
+
+@TaskHandler.register_task('mass_rename_issue')
+class MassRenameIssue(Task):
+    "Trigger a mass rename for an issue"
+
+    stop = False
+    message = ''
+    display_title = 'Mass Rename'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> int:
+        return self._issue_id
+
+    def __init__(
+        self,
+        volume_id: int,
+        issue_id: int,
+        filepath_filter: List[str] = []
+    ) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to perform the task.
+            issue_id (int): The ID of the issue for which to perform the task.
+            filepath_filter (List[str], optional): Only rename files in this
+            list.
+                Defaults to [].
         """
-    ).fetchalldict()
+        self._volume_id = volume_id
+        self._issue_id = issue_id
+        self.filepath_filter = filepath_filter
+        return
 
-    for t in tasks:
-        t['display_name'] = task_library[t['task_name']].display_title
+    def run(self) -> None:
+        volume = Volume(self._volume_id)
+        volume_title = volume.vd.title
+        issue_number = volume.get_issue(self._issue_id).get_data().issue_number
+        self.message = f'Renaming files for {volume_title} #{issue_number}'
+        WebSocket().emit(TaskStatusEvent(self.message))
 
-    return tasks
+        mass_rename(
+            self._volume_id,
+            self._issue_id,
+            filepath_filter=self.filepath_filter,
+            update_websocket=True
+        )
+
+        return
+
+
+@TaskHandler.register_task('mass_convert_issue')
+class MassConvertIssue(Task):
+    "Trigger a mass convert for an issue"
+
+    stop = False
+    message = ''
+    display_title = 'Mass Convert'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> int:
+        return self._issue_id
+
+    def __init__(
+        self,
+        volume_id: int,
+        issue_id: int,
+        filepath_filter: List[str] = []
+    ) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to perform the task.
+            issue_id (int): The ID of the issue for which to perform the task.
+            filepath_filter (List[str], optional): Only rename files in this
+            list.
+                Defaults to [].
+        """
+        self._volume_id = volume_id
+        self._issue_id = issue_id
+        self.filepath_filter = filepath_filter
+        return
+
+    def run(self) -> None:
+        volume = Volume(self._volume_id)
+        volume_title = volume.vd.title
+        issue_number = volume.get_issue(self._issue_id).get_data().issue_number
+        self.message = f'Converting files for {volume_title} #{issue_number}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        mass_convert(
+            self._volume_id,
+            self._issue_id,
+            filepath_filter=self.filepath_filter,
+            update_websocket_progress=True,
+            update_websocket_files=True
+        )
+
+        return
+
+
+@TaskHandler.register_task('add_metadata_issue')
+class AddMetaDataForIssue(Task):
+    "Add ComicRack metadata to files in an issue"
+
+    stop = False
+    message = ''
+    display_title = 'Add Metadata'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> int:
+        return self._issue_id
+
+    def __init__(
+        self,
+        volume_id: int,
+        issue_id: int,
+        filepath_filter: List[str] = []
+    ) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to perform the task.
+            issue_id (int): The ID of the issue for which to perform the task.
+            filepath_filter (List[str], optional): Only rename files in this
+            list.
+                Defaults to [].
+        """
+        self._volume_id = volume_id
+        self._issue_id = issue_id
+        self.filepath_filter = filepath_filter
+        return
+
+    def run(self) -> None:
+
+        volume_title = Volume(self._volume_id).vd.title
+        issue_number = Issue(self._issue_id).get_data().issue_number
+        issue_path = Issue(self._issue_id).get_data().files[0]["filepath"]
+        cv_id = Issue(self._issue_id).get_data().comicvine_id
+        self.message = f'Adding Metadata to {volume_title} #{issue_number}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        cmksettngs = settings.ComicTaggerSettings(None)
+        cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
+        cmksettngs.save()
+
+        opts = argparse.Namespace(
+            file_list=[issue_path],
+            issue_id=cv_id,
+            save=True,
+            online=True,
+            overwrite=True,
+            auto_imprint=False,
+            dryrun=False,
+            delete=False,
+            rename=False,
+            copy=None,
+            no_overwrite=False,
+            abort_on_low_confidence=True,
+            wait_on_cv_rate_limit=False,
+            print=False,
+            terse=False,
+            raw=False,
+            type=[1],  # CIX (ComicRack)
+            metadata=GenericMetadata(),
+            parse_filename=True,
+            split_words=False,
+            export_to_zip=False,
+            delete_after_zip_export=False,
+            abort_on_conflict=False,
+            interactive=False,
+            rename_move_dir=False,
+            show_save_summary=True,
+            assume_issue_one=True,
+            verbose=False
+        )
+        cli(opts, cmksettngs)
+
+        self.message = f'finishsed updating metadata on {volume_title}  #{issue_number} '
+        WebSocket().emit(TaskStatusEvent(self.message))
+        return
+
+
+# region Volume tasks
+@TaskHandler.register_task('auto_search')
+class AutoSearchVolume(Task):
+    "Do an automatic search for a volume"
+
+    stop = False
+    message = ''
+    display_title = 'Auto Search'
+    category = 'download'
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self, volume_id: int) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The id of the volume to search for
+        """
+        self._volume_id = volume_id
+        return
+
+    def run(self) -> List[Tuple[str, int, int, Union[int, None]]]:
+        volume_title = Volume(self._volume_id).vd.title
+        self.message = f'Searching for {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        # Get search results and download them
+        results = auto_search(self._volume_id)
+        if results:
+            return [
+                (result['link'], result["indexer_id"], self._volume_id, None)
+                for result in results
+            ]
+        return []
+
+
+@TaskHandler.register_task('refresh_and_scan')
+class RefreshAndScanVolume(Task):
+    "Trigger a refresh and scan for a volume"
+
+    stop = False
+    message = ''
+    display_title = 'Refresh And Scan'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self, volume_id: int) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The id of the volume for which to perform the task
+        """
+        self._volume_id = volume_id
+        return
+
+    def run(self) -> None:
+        volume_title = Volume(self._volume_id).vd.title
+        self.message = f'Updating info on {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        try:
+            refresh_and_scan(self._volume_id, update_websocket=True)
+        except InvalidKeyValue:
+            # API key invalid
+            pass
+
+        return
+
+
+@TaskHandler.register_task('mass_rename')
+class MassRenameVolume(Task):
+    "Trigger a mass rename for a volume"
+
+    stop = False
+    message = ''
+    display_title = 'Mass Rename'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(
+        self,
+        volume_id: int,
+        filepath_filter: List[str] = []
+    ) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to perform the task.
+            filepath_filter (List[str], optional): Only rename files in this
+            list.
+                Defaults to [].
+        """
+        self._volume_id = volume_id
+        self.filepath_filter = filepath_filter
+        return
+
+    def run(self) -> None:
+        volume_title = Volume(self._volume_id).vd.title
+        self.message = f'Renaming files for {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        mass_rename(
+            self._volume_id,
+            filepath_filter=self.filepath_filter,
+            update_websocket=True
+        )
+
+        return
+
+
+@TaskHandler.register_task('mass_convert')
+class MassConvertVolume(Task):
+    "Trigger a mass convert for a volume"
+
+    stop = False
+    message = ''
+    display_title = 'Mass Convert'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(
+        self,
+        volume_id: int,
+        filepath_filter: List[str] = []
+    ) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to perform the task.
+            filepath_filter (List[str], optional): Only convert files in this
+            list.
+                Defaults to [].
+        """
+        self._volume_id = volume_id
+        self.filepath_filter = filepath_filter
+        return
+
+    def run(self) -> None:
+        volume_title = Volume(self._volume_id).vd.title
+        self.message = f'Converting files for {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        mass_convert(
+            self._volume_id,
+            filepath_filter=self.filepath_filter,
+            update_websocket_progress=True,
+            update_websocket_files=True
+        )
+
+        return
+
+
+@TaskHandler.register_task('add_metadata')
+class AddMetadata(Task):
+    "Add ComicRack metadata to files in a volume"
+
+    stop = False
+    message = ''
+    display_title = 'Add Metadata'
+    category = ''
+
+    @property
+    def volume_id(self) -> int:
+        return self._volume_id
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self, volume_id: int) -> None:
+        """Create the task
+
+        Args:
+            volume_id (int): The ID of the volume for which to add metadata
+        """
+        self._volume_id = volume_id
+        return
+
+    def run(self) -> None:
+
+        volume_title = Volume(self._volume_id).vd.title
+        issues = Volume(self._volume_id).get_issues()
+        cv_id_list = []
+        all_paths = []
+
+        for i in issues:
+            if not (len(i.files) == 0):
+                cv_id_list.append(i.comicvine_id)
+                path = i.files[0]["filepath"]
+                all_paths.append(path)
+
+        LOGGER.info(f'Started adding metadata to {volume_title}')
+        self.message = f'Started adding metadata to {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        cmksettngs = settings.ComicTaggerSettings(None)
+        cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
+        cmksettngs.save()
+
+        for l in range(len(all_paths)):
+
+            self.message = f'Updating metadata on {issues[l].title}'
+            WebSocket().emit(TaskStatusEvent(self.message))
+
+            opts = argparse.Namespace(
+                file_list=[all_paths[l]],
+                issue_id=cv_id_list[l],
+                save=True,
+                online=True,
+                overwrite=True,
+                auto_imprint=False,
+                dryrun=False,
+                delete=False,
+                rename=False,
+                copy=None,
+                no_overwrite=False,
+                abort_on_low_confidence=True,
+                wait_on_cv_rate_limit=False,
+                print=False,
+                terse=False,
+                raw=False,
+                type=[1],  # CIX (ComicRack)
+                metadata=GenericMetadata(),
+                parse_filename=True,
+                split_words=False,
+                export_to_zip=False,
+                delete_after_zip_export=False,
+                abort_on_conflict=False,
+                interactive=False,
+                rename_move_dir=False,
+                show_save_summary=True,
+                assume_issue_one=True,
+                verbose=False
+            )
+            cli(opts, cmksettngs)
+
+        LOGGER.info(f'Finished adding metadata to {volume_title}')
+        self.message = f'Finished updating metadata on {volume_title}'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        return
+
+
+# region Library tasks
+@TaskHandler.register_task('update_all')
+class UpdateAll(Task):
+    "Trigger a refresh and scan for each volume in the library"
+
+    stop = False
+    message = ''
+    display_title = 'Update All'
+    category = ''
+
+    @property
+    def volume_id(self) -> None:
+        return None
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self, allow_skipping: bool = False) -> None:
+        """Create the task
+
+        Args:
+            allow_skipping (bool, optional): Skip volumes that have been updated in the last 24 hours.
+                Defaults to False.
+        """
+        self.allow_skipping = allow_skipping
+        return
+
+    def run(self) -> None:
+        self.message = f'Updating info on all volumes'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        try:
+            refresh_and_scan(
+                update_websocket=True,
+                allow_skipping=self.allow_skipping
+            )
+        except InvalidKeyValue:
+            # API key invalid
+            pass
+
+        return
+
+
+@TaskHandler.register_task('search_all')
+class SearchAll(Task):
+    "Trigger an automatic search for each volume in the library"
+
+    stop = False
+    message = ''
+    display_title = 'Search All'
+    category = 'download'
+
+    @property
+    def volume_id(self) -> None:
+        return None
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self) -> None:
+        return
+
+    def run(self) -> List[Tuple[str, int, int, Union[int, None]]]:
+        cursor = get_db(force_new=True)
+        cursor.execute(
+            "SELECT id, title FROM volumes WHERE monitored = 1;"
+        )
+        downloads: List[Tuple[str, int, int, Union[int, None]]] = []
+        ws = WebSocket()
+        for volume_id, volume_title in cursor:
+            if self.stop:
+                break
+            self.message = f'Searching for {volume_title}'
+            ws.emit(TaskStatusEvent(self.message))
+            # Get search results and download them
+            results = auto_search(volume_id)
+            if results:
+                downloads += [
+                    (result['link'], result["indexer_id"], volume_id, None)
+                    for result in results
+                ]
+        return downloads
+
+
+@TaskHandler.register_task('metadata_all')
+class MetaDataAll(Task):
+    "Adding metadata to all volumes in the library"
+
+    stop = False
+    message = ''
+    display_title = 'Metadata All'
+    category = ''
+
+    @property
+    def volume_id(self) -> None:
+        return None
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self, allow_skipping: bool = False) -> None:
+        """Create the task
+
+        Args:
+            allow_skipping (bool, optional): Skip volumes that have been updated in the last 24 hours.
+                Defaults to False.
+        """
+        self.allow_skipping = allow_skipping
+        return
+
+    def run(self) -> None:
+        self.message = f'Adding metadata on all volumes'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        try:
+            issues_paths = get_monitored_cv_ids_and_paths()
+            cmksettngs = settings.ComicTaggerSettings(None)
+            cmksettngs.cv_api_key = settings_module.PublicSettingsValues.comicvine_api_key
+            cmksettngs.save()
+            for i in issues_paths:
+                path = i[1]
+                id = i[0]
+                opts = argparse.Namespace(
+                    file_list=[path],
+                    issue_id=id,
+                    save=True,
+                    online=True,
+                    overwrite=True,
+                    auto_imprint=False,
+                    dryrun=False,
+                    delete=False,
+                    rename=False,
+                    copy=None,
+                    no_overwrite=False,
+                    abort_on_low_confidence=True,
+                    wait_on_cv_rate_limit=False,
+                    print=False,
+                    terse=False,
+                    raw=False,
+                    type=[1],  # CIX (ComicRack)
+                    metadata=GenericMetadata(),
+                    parse_filename=True,
+                    split_words=False,
+                    export_to_zip=False,
+                    delete_after_zip_export=False,
+                    abort_on_conflict=False,
+                    interactive=False,
+                    rename_move_dir=False,
+                    show_save_summary=True,
+                    assume_issue_one=True,
+                    verbose=False
+                )
+                cli(opts, cmksettngs)
+
+        except InvalidKeyValue:
+            # API key invalid
+            pass
+
+        LOGGER.info(f'Finished adding metadata to all volumes')
+        self.message = f'Finished updating metadata on all volumes'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        return

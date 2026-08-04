@@ -3,12 +3,11 @@
 from asyncio import run
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, List, Tuple, Type, Union
+from typing import Any, Dict, List, Tuple, Union
 
 from flask import Blueprint, request, send_file
 
-from backend.base.custom_exceptions import (InvalidKeyValue,
-                                            KeyNotFound, TaskNotFound)
+from backend.base.custom_exceptions import InvalidKeyValue, KeyNotFound
 from backend.base.definitions import (BlocklistReason, BlocklistReasonID,
                                       CredentialData, CredentialSource,
                                       DownloadService, DownloadType, FileMatch,
@@ -23,11 +22,10 @@ from backend.features.download_queue import (DownloadHandler,
                                              get_download_history)
 from backend.features.library_import import (import_library,
                                              propose_library_import)
-from backend.features.mass_edit import run_mass_editor_action
+from backend.features.mass_edit import MassEditorActionManager
 from backend.features.search import manual_search
-from backend.features.tasks import (Task, TaskHandler,
-                                    delete_task_history, get_task_history,
-                                    get_task_planning, task_library)
+from backend.features.tasks import (TaskHandler, delete_task_history,
+                                    get_task_history)
 from backend.implementations.blocklist import (add_to_blocklist,
                                                delete_blocklist,
                                                delete_blocklist_entry,
@@ -107,12 +105,6 @@ def extract_key(request, key: str, check_existence: bool = True) -> Any:
                     Library.get_issue(value)
             except (ValueError, TypeError):
                 raise InvalidKeyValue(key, value)
-
-        elif key == 'cmd':
-            task = task_library.get(value)
-            if task is None:
-                raise TaskNotFound(value)
-            value = task
 
         elif key == 'api_key':
             if not value or value != Settings().sv.api_key:
@@ -330,12 +322,10 @@ def api_tasks():
         if not isinstance(data, dict):
             raise InvalidKeyValue(value=data)
 
-        task: Union[Type[Task], None] = task_library.get(data.get('cmd', ''))
-        if not task:
-            raise TaskNotFound(data.get('cmd', ''))
+        TaskClass = TaskHandler.get_task_class(data.get('cmd', ''))
 
         kwargs = {}
-        if task.action in (
+        if TaskClass.action in (
             'refresh_and_scan',
             'auto_search', 'auto_search_issue',
             'mass_rename', 'mass_rename_issue',
@@ -347,7 +337,7 @@ def api_tasks():
                 raise InvalidKeyValue('volume_id', volume_id)
             kwargs['volume_id'] = volume_id
 
-        if task.action in (
+        if TaskClass.action in (
             'auto_search_issue',
             'mass_rename_issue',
             'mass_convert_issue',
@@ -358,7 +348,7 @@ def api_tasks():
                 raise InvalidKeyValue('issue_id', issue_id)
             kwargs['issue_id'] = issue_id
 
-        if task.action in (
+        if TaskClass.action in (
             'mass_rename', 'mass_rename_issue',
             'mass_convert', 'mass_convert_issue'
         ):
@@ -370,19 +360,19 @@ def api_tasks():
                 raise InvalidKeyValue('filepath_filter', filepath_filter)
             kwargs['filepath_filter'] = filepath_filter or []
 
-        if task.action == 'update_all':
+        if TaskClass.action == 'update_all':
             allow_skipping = data.get('allow_skipping', True)
             if not isinstance(allow_skipping, bool):
                 raise InvalidKeyValue('allow_skipping', allow_skipping)
             kwargs['allow_skipping'] = allow_skipping
 
-        if task.action == 'metadata_all':
+        if TaskClass.action == 'metadata_all':
             allow_skipping = data.get('allow_skipping', True)
             if not isinstance(allow_skipping, bool):
                 raise InvalidKeyValue('allow_skipping', allow_skipping)
             kwargs['allow_skipping'] = allow_skipping
 
-        task_instance = task(**kwargs)
+        task_instance = TaskClass(**kwargs)
         result = task_handler.add(task_instance)
         return return_api({'id': result}, code=201)
 
@@ -405,7 +395,7 @@ def api_task_history():
 @error_handler
 @auth
 def api_task_planning():
-    result = get_task_planning()
+    result = TaskHandler().get_task_planning()
     return return_api(result)
 
 
@@ -1131,16 +1121,34 @@ def api_volume_manual_search(id: int):
 @auth
 def api_volume_download(id: int):
     Library.get_volume(id)
-    link: str = extract_key(request, 'link')
-    force_match: bool = extract_key(request, 'force_match')
-    result = run(DownloadHandler().add(link, id, force_match=force_match))
-    return return_api(
-        {
-            'result': (result or (None,))[0],
-            'fail_reason': result[1].value if result[1] else result[1]
-        },
-        code=201
+    data = request.get_json()
+
+    if not isinstance(data, dict):
+        raise InvalidKeyValue("body", data)
+
+    if "link" not in data:
+        raise KeyNotFound("link")
+    if not isinstance(data["link"], str):
+        raise InvalidKeyValue("link", data["link"])
+
+    if "force_match" not in data:
+        raise KeyNotFound("force_match")
+    if not isinstance(data["force_match"], bool):
+        raise InvalidKeyValue("force_match", data["force_match"])
+
+    if "indexer_id" not in data:
+        raise KeyNotFound("indexer_id")
+    if not isinstance(data["indexer_id"], int):
+        raise InvalidKeyValue("indexer_id", data["indexer_id"])
+
+    result = DownloadHandler().add(
+        data["link"],
+        indexer_id=data["indexer_id"],
+        volume_id=id,
+        issue_id=None,
+        force_match=data["force_match"]
     )
+    return return_api(result, code=201)
 
 
 @api.route('/issues/<int:id>/manualsearch', methods=['GET'])
@@ -1162,11 +1170,9 @@ def api_volume_add_metadata(id: int):
     Library.get_volume(id)
     task_handler = TaskHandler()
 
-    task: Union[Type[Task], None] = task_library.get('add_metadata')
-    if not task:
-        raise TaskNotFound('add_metadata')
+    TaskClass = TaskHandler.get_task_class('add_metadata')
 
-    task_instance = task(volume_id=id)
+    task_instance = TaskClass(volume_id=id)
     task_id = task_handler.add(task_instance)
     return return_api(
         {
@@ -1182,18 +1188,34 @@ def api_volume_add_metadata(id: int):
 @auth
 def api_issue_download(id: int):
     volume_id = Library.get_issue(id).get_data().volume_id
-    link = extract_key(request, 'link')
-    force_match: bool = extract_key(request, 'force_match')
-    result = run(DownloadHandler().add(
-        link, volume_id, id, force_match=force_match
-    ))
-    return return_api(
-        {
-            'result': result[0],
-            'fail_reason': result[1].value if result[1] else result[1]
-        },
-        code=201
+    data = request.get_json()
+
+    if not isinstance(data, dict):
+        raise InvalidKeyValue("body", data)
+
+    if "link" not in data:
+        raise KeyNotFound("link")
+    if not isinstance(data["link"], str):
+        raise InvalidKeyValue("link", data["link"])
+
+    if "force_match" not in data:
+        raise KeyNotFound("force_match")
+    if not isinstance(data["force_match"], bool):
+        raise InvalidKeyValue("force_match", data["force_match"])
+
+    if "indexer_id" not in data:
+        raise KeyNotFound("indexer_id")
+    if not isinstance(data["indexer_id"], int):
+        raise InvalidKeyValue("indexer_id", data["indexer_id"])
+
+    result = DownloadHandler().add(
+        data["link"],
+        indexer_id=data["indexer_id"],
+        volume_id=volume_id,
+        issue_id=id,
+        force_match=data["force_match"]
     )
+    return return_api(result, code=201)
 
 
 @api.route('/activity/queue', methods=['GET', 'DELETE'])
@@ -1560,7 +1582,9 @@ def api_mass_editor():
     if not isinstance(args, dict):
         raise InvalidKeyValue('args', args)
 
-    run_mass_editor_action(action, volume_ids, **args)
+    MassEditorActionManager.run_action(
+        action, volume_ids, **args
+    )
     return return_api({})
 
 
