@@ -20,7 +20,7 @@
 
 	"python.testing.unittestEnabled": true,
 	"python.testing.unittestArgs": [
-		"-s", "./tests",
+		"-s", "./tests/Tbackend",
 		"-p", "*.py"
 	],
 
@@ -48,6 +48,13 @@
 		{
 			"languageId": "log",
 			"enabled": false
+		}
+	],
+	"python-envs.pythonProjects": [
+		{
+			"path": ".",
+			"envManager": "ms-python.python:system",
+			"packageManager": "ms-python.python:pip"
 		}
 	],
 }

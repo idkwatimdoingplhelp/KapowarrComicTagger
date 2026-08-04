@@ -11,12 +11,13 @@ from backend.base.custom_exceptions import (ClientNotWorking,
 from backend.base.definitions import (BrokenClientReason, Constants,
                                       CredentialData, CredentialSource,
                                       DownloadClientIdentifier,
-                                      DownloadService)
+                                      DownloadService, StatusType)
 from backend.base.helpers import Session
 from backend.base.logging import LOGGER
 from backend.implementations.credentials import Credentials
 from backend.implementations.download_client_manager import DownloadClients
 from backend.implementations.download_clients.base import BaseDirectDownload
+from backend.internals.status import StatusHandlers
 
 
 @DownloadClients.register_client(DownloadClientIdentifier.PIXELDRAIN)
@@ -67,6 +68,10 @@ class PixelDrainDownload(BaseDirectDownload):
             f"Pixeldrain account transfer state: {transfer_limit_used}/{transfer_limit}"
         )
         if transfer_limit_used > transfer_limit:
+            StatusHandlers().report(
+                StatusType.DOWNLOAD_SERVICE_RATE_LIMIT,
+                DownloadService.PIXELDRAIN.value
+            )
             raise DownloadServiceRateLimitReached(DownloadService.PIXELDRAIN)
         return None
 
@@ -117,7 +122,6 @@ class PixelDrainFolderDownload(PixelDrainDownload):
         self._api_key = None
         self._first_fetch = True
         download_id = self.download_link.rstrip("/").split("/")[-1]
-        'https://pixeldrain.com/api/list/{download_id}/zip'
         return Constants.PIXELDRAIN_API_URL + '/list/' + download_id + '/zip'
 
 

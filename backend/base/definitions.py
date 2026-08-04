@@ -272,7 +272,12 @@ class StatusType(BaseEnum):
     "A type of status issue that can be reported"
 
     CV_RATE_LIMIT = "cv_rate_limit"
-    "ComicVine API rate limit reached"
+    DOWNLOAD_SERVICE_RATE_LIMIT = "download_service_rate_limit"
+
+    ROOT_FOLDER_ALMOST_FULL = "root_folder_almost_full"
+    ROOT_FOLDER_FULL = "root_folder_full"
+
+    CF_CHALLENGE_WITH_NO_FS = "cf_challenge_with_no_fs"
 
 
 class StartType(BaseEnum):
@@ -433,9 +438,9 @@ class BlocklistReasonID(BaseEnum):
 class BlocklistReason(BaseEnum):
     "The reason for putting a link on the blocklist"
 
-    LINK_BROKEN = "Link broken"
-    NO_WORKING_LINKS = "No supported or working links"
-    ADDED_BY_USER = "Added by user"
+    LINK_BROKEN = "link_broken"
+    NO_WORKING_LINKS = "no_working_links"
+    ADDED_BY_USER = "added_by_user"
 
 
 class BrokenClientReason(BaseEnum):
@@ -444,11 +449,11 @@ class BrokenClientReason(BaseEnum):
     (aside from an invalid link)
     """
 
-    CONNECTION_ERROR = "Failed to connect"
-    NOT_CLIENT_INSTANCE = "What was connected to was not the expected client"
-    VERSION_NOT_SUPPORTED = "The version is not supported"
-    FAILED_PROCESSING_RESPONSE = "Got an unexpected response back"
-    ACCESS_DENIED = "Access denied by client but not because of invalid credentials"
+    CONNECTION_ERROR = "connection_error"
+    NOT_CLIENT_INSTANCE = "not_client_instance"
+    VERSION_NOT_SUPPORTED = "version_not_supported"
+    FAILED_PROCESSING_RESPONSE = "failed_processing_response"
+    ACCESS_DENIED = "access_denied"
     """
     Access denied not because credentials are invalid but because,
     e.g., Mega failed to log in anonymously or a webpage is blocked by CF
@@ -459,14 +464,14 @@ class EnqueuingDownloadFailureReason(BaseEnum):
     "The reason a download failed to be added to the queue"
 
     # Download link is webpage with links on it. E.g. GetComics.
-    WEBPAGE_BROKEN = "Webpage unavailable"
-    NO_MATCHES = "No links found on webpage that match to volume and are not blocklisted"
-    NO_WORKING_LINKS = "All download links found on the webpage are broken"
-    ONLY_RATE_LIMITED_LINKS = "All working download links on the webpage are from rate limited services"
+    WEBPAGE_BROKEN = "webpage_broken"
+    NO_MATCHES = "no_matches"
+    NO_WORKING_LINKS = "no_working_links"
+    ONLY_RATE_LIMITED_LINKS = "only_rate_limited_links"
 
     # Any download link, whether webpage or direct link.
-    LINK_BROKEN = "Download link broken"
-    LINK_RATE_LIMITED = "Download link rate limited"
+    LINK_BROKEN = "link_broken"
+    LINK_RATE_LIMITED = "link_rate_limited"
 
 
 class DownloadType(BaseEnum):
@@ -652,7 +657,8 @@ class SearchResultData(FilenameData):
     link: str
     display_title: str
     size: int
-    source: str
+    indexer_id: int
+    indexer_title: str
 
 
 class SearchResultMatchData(TypedDict):
@@ -1055,26 +1061,39 @@ class WebSocketEvent(ABC):
         ...
 
 
-class MassEditorAction(ABC):
-    identifier: str
-    "The string used in the API to refer to the action"
+class Task(ABC):
+    action: str
 
-    def __init__(self, volume_ids: List[int]) -> None:
-        """Prepare a mass editor action.
+    stop: bool
+    message: str
+    display_title: str
+    category: str
 
-        Args:
-            volume_ids (List[int]): The volume IDs to work on.
-        """
-        self.volume_ids = volume_ids
-        return
-
+    @property
     @abstractmethod
-    def run(self, **kwargs: Any) -> None:
-        "Run the mass editor action"
+    def volume_id(self) -> Union[int, None]:
         ...
 
-    def __repr__(self) -> str:
-        return f'<{self.__class__.__name__}(action={self.identifier}; ids={self.volume_ids}); {id(self)}>'
+    @property
+    @abstractmethod
+    def issue_id(self) -> Union[int, None]:
+        ...
+
+    @abstractmethod
+    def __init__(self, **kwargs) -> None:
+        ...
+
+    @abstractmethod
+    def run(self) -> Union[None, List[Tuple[str, int, int, Union[int, None]]]]:
+        """Run the task
+
+        Returns:
+            Union[None, List[Tuple[str, int, Union[int, None]]]]:
+            Either `None` if the task has no result or
+            `List[Tuple[str, int, Union[int, None]]]` if the task returns
+            search results.
+        """
+        ...
 
 
 class IndexerClient(ABC):
@@ -1438,6 +1457,62 @@ class ExternalDownloadClient(ABC):
 
     def __repr__(self) -> str:
         return f'<{self.__class__.__name__}(id={self.id}; title={self.title}); {id(self)}>'
+
+
+class DownloadPrepper(ABC):
+    "Converts a download link to a download instance"
+
+    client_type: str
+    "The name of the external client (e.g. 'qBittorrent')"
+
+    download_type: DownloadType
+    "The protocol it uses to download (e.g. a torrent)"
+
+    @property
+    @abstractmethod
+    def web_title(self) -> Union[str, None]:
+        ...
+
+    @abstractmethod
+    def __init__(
+        self,
+        link: str,
+        indexer_id: int,
+        volume_id: int,
+        issue_id: Union[int, None] = None,
+        force_match: bool = False
+    ) -> None:
+        """Set up the prepper.
+
+        Args:
+            link (str): A link to download from.
+
+            indexer_id (int): The ID of the indexer that the link came from.
+
+            volume_id (int): The ID of the volume for which the download is
+                intended.
+
+            issue_id (Union[int, None], optional): The ID of the issue for which
+                the download is intended.
+                Defaults to None.
+
+            force_match (bool, optional): On sources where downloads are
+                filtered, don't and instead download everything.
+                Defaults to False.
+        """
+        ...
+
+    @abstractmethod
+    def get_downloads(self) -> List['Download']:
+        """Process the link and turn it into one or more downloads.
+
+        Raises:
+            EnqueuingDownloadFailure: Failed to process link.
+
+        Returns:
+            List[Download]: The list of downloads.
+        """
+        ...
 
 
 class Download(ABC):

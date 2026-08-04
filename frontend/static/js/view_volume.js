@@ -45,6 +45,16 @@ const ViewEls = {
 	issues_list: document.querySelector('#issues-list')
 };
 
+const enqueueFailureReasonMap = {
+    webpage_broken: "Webpage unavailable",
+    no_matches: "No links found on webpage that match to volume and are not blocklisted",
+    no_working_links: "All download links found on the webpage are broken",
+    only_rate_limited_links: "All working download links on the webpage are from rate limited services",
+
+    link_broken: "Download link broken",
+    link_rate_limited: "Download link rate limited"
+}
+
 //
 // Filling data
 //
@@ -370,19 +380,19 @@ function showManualSearch(api_key, issue_id=null) {
 			title.href = result.link;
 			title.innerText = result.display_title;
 
-			entry.querySelector('.source-column').innerText = result.source;
+			entry.querySelector('.source-column').innerText = result.indexer_title;
 			
 			entry.querySelector('.size-column').innerText = convertSize(result.size, 1);
 
 			const download_button = entry.querySelector('.search-action-column :nth-child(1)');
 			download_button.classList.add('icon-text-color');
 			download_button.onclick =
-				e => addManualSearch(result.link, false, download_button, api_key, issue_id);
+				e => addManualSearch(result.link, result.indexer_id, false, download_button, api_key, issue_id);
 
 			const force_download_button = entry.querySelector('.search-action-column :nth-child(2)');
 			force_download_button.classList.add('icon-text-color');
 			force_download_button.onclick =
-				e => addManualSearch(result.link, true, force_download_button, api_key, issue_id);
+				e => addManualSearch(result.link, result.indexer_id, true, force_download_button, api_key, issue_id);
 
 			const blocklist_button = entry.querySelector('.search-action-column :nth-child(3)')
 			if (result.match_issue === null || !result.match_issue.includes('blocklist'))
@@ -404,7 +414,7 @@ function showManualSearch(api_key, issue_id=null) {
 	});
 };
 
-function addManualSearch(link, force, button, api_key, issue_id=null) {
+function addManualSearch(link, indexer_id, force, button, api_key, issue_id=null) {
 	button.classList.remove('error');
 	button.title = 'Download';
 	const img = button.querySelector('img');
@@ -415,18 +425,23 @@ function addManualSearch(link, force, button, api_key, issue_id=null) {
 		? `/issues/${issue_id}/download`
 		: `/volumes/${volume_id}/download`;
 
-	sendAPI('POST', url, api_key, {link: link, force_match: force})
-	.then(response => response.json())
-	.then(json => {
+	sendAPI('POST', url, api_key, {}, {link: link, indexer_id: indexer_id, force_match: force})
+	.then(() => {
 		img.classList.remove('spinning');
-		if (json.result.fail_reason === null)
-			img.src = `${url_base}/static/img/check.svg`;
-		else {
-			img.src = `${url_base}/static/img/download.svg`;
-			button.classList.add('error');
-			button.title = json.result.fail_reason;
-		};
-	});
+		img.src = `${url_base}/static/img/check.svg`;
+	})
+	.catch(e => {
+		e.json().then(json => {
+			if (json.error === "EnqueuingDownloadFailure") {
+				img.classList.remove('spinning');
+				img.src = `${url_base}/static/img/download.svg`;
+				button.classList.add('error');
+				button.title = enqueueFailureReasonMap[json.result.reason];
+			}
+			else
+				console.log(json)
+		})
+	})
 };
 
 function blockManualSearch(

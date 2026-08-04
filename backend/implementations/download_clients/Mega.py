@@ -26,7 +26,8 @@ from backend.base.custom_exceptions import (ClientNotWorking,
 from backend.base.definitions import (BaseEnum, BrokenClientReason, Constants,
                                       CredentialData, CredentialSource,
                                       DownloadClientIdentifier,
-                                      DownloadService, DownloadState)
+                                      DownloadService, DownloadState,
+                                      StatusType)
 from backend.base.helpers import Session
 from backend.base.logging import LOGGER
 from backend.implementations.credentials import Credentials
@@ -36,6 +37,7 @@ from backend.implementations.naming import generate_issue_name
 from backend.implementations.volumes import Volume
 from backend.internals.server import QueueStatusEvent, WebSocket
 from backend.internals.settings import Settings
+from backend.internals.status import StatusHandlers
 
 mega_url_regex = compile(
     r"https?://(?:www\.)?mega(?:\.co)?\.nz/(?:file/(?P<ID1>[\w^_]+)#(?P<K1>[\w\-,=]+)|folder/(?P<ID2>[\w^_]+)#(?P<K2>[\w\-,=]+)/file/(?P<NID>[\w^_]+)|#!(?P<ID3>[\w^_]+)!(?P<K3>[\w\-,=]+))"
@@ -568,7 +570,18 @@ class MegaAccount:
                 user=user
             )
 
-        if isinstance(res, int) or 'e' in res:
+        if isinstance(res, int):
+            if res == -9:
+                raise CredentialInvalid
+
+            raise ClientNotWorking(
+                BrokenClientReason.FAILED_PROCESSING_RESPONSE
+            )
+
+        if 'e' in res:
+            if res['e'] == -9:
+                raise CredentialInvalid
+
             raise ClientNotWorking(
                 BrokenClientReason.FAILED_PROCESSING_RESPONSE
             )
@@ -706,6 +719,10 @@ class Mega(MegaABC):
 
         if res.get('tl', 0): # tl = time left
             # Download limit reached
+            StatusHandlers().report(
+                StatusType.DOWNLOAD_SERVICE_RATE_LIMIT,
+                DownloadService.MEGA.value
+            )
             raise DownloadServiceRateLimitReached(DownloadService.MEGA)
 
         attr = MegaCrypto.decrypt_attr(res["at"], self.__master_key)
@@ -828,6 +845,10 @@ class Mega(MegaABC):
 
                         if not chunk:
                             # Download limit reached mid download
+                            StatusHandlers().report(
+                                StatusType.DOWNLOAD_SERVICE_RATE_LIMIT,
+                                DownloadService.MEGA.value
+                            )
                             raise DownloadServiceRateLimitReached(
                                 DownloadService.MEGA)
 
@@ -1002,6 +1023,10 @@ class MegaFolder(MegaABC):
 
                 if res.get('tl', 0): # tl = time left
                     # Download limit reached
+                    StatusHandlers().report(
+                        StatusType.DOWNLOAD_SERVICE_RATE_LIMIT,
+                        DownloadService.MEGA.value
+                    )
                     raise DownloadServiceRateLimitReached(DownloadService.MEGA)
 
                 self.pure_link = res['g']
@@ -1035,6 +1060,10 @@ class MegaFolder(MegaABC):
 
                                 if not chunk:
                                     # Download limit reached mid download
+                                    StatusHandlers().report(
+                                        StatusType.DOWNLOAD_SERVICE_RATE_LIMIT,
+                                        DownloadService.MEGA.value
+                                    )
                                     raise DownloadServiceRateLimitReached(
                                         DownloadService.MEGA
                                     )

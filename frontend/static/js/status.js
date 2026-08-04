@@ -6,10 +6,7 @@ const StatEls = {
 	data_folder: document.querySelector('#data-folder'),
 	os: document.querySelector('#os'),
 	runs_64bit: document.querySelector('#runs-64bit'),
-	status_checks: {
-		list: document.querySelector('#status-checks-list'),
-		ok: document.querySelector('#status-checks-ok')
-	},
+	status: document.getElementById("status-body"),
 	buttons: {
 		copy: document.querySelector('#copy-about'),
 		restart: document.querySelector('#restart-button'),
@@ -38,55 +35,30 @@ const statusDescs = {
 			fetch_volume: 'Fetching volume metadata',
 			fetch_issues: 'Fetching issue metadata'
 		}
+	},
+	download_service_rate_limit: {
+		desc: 'Download service rate limit reached',
+		subTypeLabels: {
+			Mega: 'Mega',
+			Pixeldrain: 'Pixeldrain'
+		}
+	},
+	root_folder_almost_full: {
+		desc: 'Root folder is almost full',
+		subTypeLabels: {}
+	},
+	root_folder_full: {
+		desc: 'Root folder is full',
+		subTypeLabels: {}
+	},
+	cf_challenge_with_no_fs: {
+		desc: 'CloudFlare challenge encountered and FlareSolverr is not set up',
+		subTypeLabels: {}
 	}
 }
 
-function loadStatusChecks(api_key) {
-	fetchAPI('/system/status', api_key)
-	.then(json => {
-		StatEls.status_checks.list.innerHTML = '';
-		if (json.result.length === 0) {
-			hide([StatEls.status_checks.list],
-				[StatEls.status_checks.ok]);
-		} else {
-			hide([StatEls.status_checks.ok],
-				[StatEls.status_checks.list]);
-			json.result.forEach(entry => {
-				const item = document.createElement('div');
-				item.classList.add('status-check-item');
-
-				const text = document.createElement('p');
-				const desc = statusDescs[entry.type].desc;
-				const subs = entry.display_subtypes
-					.map(s => statusDescs[entry.type].subTypeLabels[s] || s)
-					.join(', ');
-				text.innerText = `${desc}: ${subs}`;
-
-				const clearBtn = document.createElement('button');
-				clearBtn.innerText = 'Clear';
-				clearBtn.onclick = e => {
-					sendAPI('DELETE', '/system/status', api_key, {
-						type: entry.type
-					})
-					.then(_ => loadStatusChecks(api_key));
-				};
-
-				item.appendChild(text);
-				item.appendChild(clearBtn);
-				StatEls.status_checks.list.appendChild(item);
-			});
-		};
-	})
-	.catch(e => console.log(e));
-};
-
-// code run on load
-
-usingApiKey()
-.then(api_key => {
-	loadStatusChecks(api_key);
-
-	fetchAPI('/system/about', api_key)
+function loadAbout(apiKey) {
+	fetchAPI('/system/about', apiKey)
 	.then(json => {
 		StatEls.version.innerText = json.result.version;
 		StatEls.python_version.innerText = json.result.python_version;
@@ -95,7 +67,7 @@ usingApiKey()
 		StatEls.data_folder.innerText = json.result.data_folder;
 		StatEls.os.innerText = json.result.os;
 		StatEls.runs_64bit.innerText = json.result.runs_64bit ? 'Yes' : 'No';
-		
+
 		StatEls.buttons.copy.onclick = e => {
 			copy(about_table
 				.replace('{k_version}', json.result.version)
@@ -108,6 +80,54 @@ usingApiKey()
 			);
 		};
 	});
+}
+
+function loadStatus(apiKey) {
+	fetchAPI('/system/status', apiKey)
+	.then(json => {
+		StatEls.status.querySelectorAll("tr:not(#status-clear-row)").forEach(
+			r => r.remove()
+		)
+
+		json.result.forEach(entry => {
+			const row = document.createElement("tr")
+			
+			const desc = document.createElement("td")
+			desc.innerText = statusDescs[entry.type].desc
+			if (entry.display_subtypes.length > 0) {
+				const subs = entry.display_subtypes
+					.map(s => statusDescs[entry.type].subTypeLabels[s] || s)
+					.join(', ')
+				desc.innerText += `: ${subs}`
+			}
+			row.appendChild(desc)
+			
+			const actions = document.createElement("td")
+			const clear = document.createElement("button")
+			clear.innerHTML = icons.clear
+			clear.title = "Clear"
+			clear.onclick = () => {
+				sendAPI("DELETE", "/system/status", apiKey, {
+					type: entry.type
+				})
+				.then(() => loadStatus(apiKey))
+			}
+			actions.appendChild(clear)
+			row.appendChild(actions)
+			
+			StatEls.status.appendChild(row)
+		})
+	})
+	.catch(e => console.log(e))
+}
+
+// code run on load
+
+usingApiKey()
+.then(api_key => {
+	loadStatus(api_key);
+	loadAbout(api_key);
+
 	StatEls.buttons.restart.onclick =
 		e => {
 			StatEls.buttons.restart.innerText = 'Restarting';
