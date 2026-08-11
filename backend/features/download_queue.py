@@ -29,8 +29,6 @@ from backend.features.post_processing import (PostProcessor,
                                               PostProcessorTorrentsCopy)
 from backend.implementations.blocklist import add_to_blocklist
 from backend.implementations.download_client_manager import DownloadClients
-from backend.implementations.download_clients.Mega import MegaDownload
-from backend.implementations.download_clients.Torrent import TorrentDownload
 from backend.implementations.download_prepper_manager import DownloadPreppers
 from backend.implementations.external_client_manager import ExternalClients
 from backend.implementations.indexer_client_manager import IndexerClients
@@ -127,11 +125,11 @@ class DownloadHandler(metaclass=Singleton):
                     name=f'DownloadThread-{download.id}'
                 )
 
-            if isinstance(download, TorrentDownload):
+            else:
                 thread = Server().get_db_thread(
-                    target=self.__run_torrent_download,
+                    target=self.__run_external_download,
                     args=(download,),
-                    name=f'TorrentDownloadThread-{download.id}'
+                    name=f'ExternalDownloadThread-{download.id}'
                 )
                 download.download_thread = thread
                 thread.start()
@@ -379,19 +377,19 @@ class DownloadHandler(metaclass=Singleton):
 
         except DownloadServiceRateLimitReached as e:
             download.stop(DownloadState.FAILED_STATE)
-            if e.service == DownloadService.MEGA:
-                self._remove_mega(exclude_id=download.id)
+            self._remove_all_of_service(e.service, exclude_id=download.id)
 
         ws.emit(status_event)
+        pp = PostProcessor(download)
         if download.state == DownloadState.SHUTDOWN_STATE:
-            PostProcessor.shutdown(download)
+            pp.shutdown()
             return
 
         elif download.state == DownloadState.CANCELED_STATE:
-            PostProcessor.canceled(download)
+            pp.canceled()
 
         elif download.state == DownloadState.FAILED_STATE:
-            PostProcessor.failed(download)
+            pp.failed()
 
         elif download.state == DownloadState.DOWNLOADING_STATE:
             download.state = DownloadState.IMPORTING_STATE
@@ -400,7 +398,7 @@ class DownloadHandler(metaclass=Singleton):
             # While this download is post-processing, start the next one.
             self._process_queue()
 
-            PostProcessor.success(download)
+            pp.success()
 
         self.queue.remove(download)
         ws.emit(RemovedFromQueueEvent(download))
@@ -408,11 +406,11 @@ class DownloadHandler(metaclass=Singleton):
         self._process_queue()
         return
 
-    def __run_torrent_download(self, download: TorrentDownload) -> None:
-        """Start a torrent download. Intended to be run in a thread.
+    def __run_external_download(self, download: ExternalDownload) -> None:
+        """Start an external download. Intended to be run in a thread.
 
         Args:
-            download (TorrentDownload): The torrent download to run.
+            download (ExternalDownload): The external download to run.
                 One of the entries in self.queue.
         """
         download.run()
@@ -422,10 +420,10 @@ class DownloadHandler(metaclass=Singleton):
         seeding_handling = self.settings.sv.seeding_handling
 
         if seeding_handling == SeedingHandling.COMPLETE:
-            post_processer = PostProcessorTorrentsComplete
+            pp = PostProcessorTorrentsComplete(download)
 
         elif seeding_handling == SeedingHandling.COPY:
-            post_processer = PostProcessorTorrentsCopy
+            pp = PostProcessorTorrentsCopy(download)
 
         else:
             assert_never(seeding_handling)
@@ -440,13 +438,13 @@ class DownloadHandler(metaclass=Singleton):
 
             if download.state == DownloadState.CANCELED_STATE:
                 download.remove_from_client(delete_files=True)
-                post_processer.canceled(download)
+                pp.canceled()
                 self.queue.remove(download)
                 break
 
             elif download.state == DownloadState.FAILED_STATE:
                 download.remove_from_client(delete_files=True)
-                post_processer.perm_failed(download)
+                pp.perm_failed()
                 self.queue.remove(download)
                 break
 
@@ -459,12 +457,12 @@ class DownloadHandler(metaclass=Singleton):
                 and not files_copied
             ):
                 files_copied = True
-                post_processer.seeding(download)
+                pp.seeding()
 
             elif download.state == DownloadState.IMPORTING_STATE:
                 if self.settings.sv.delete_completed_downloads:
                     download.remove_from_client(delete_files=False)
-                post_processer.success(download)
+                pp.success()
                 self.queue.remove(download)
                 break
 
@@ -519,20 +517,22 @@ class DownloadHandler(metaclass=Singleton):
         active_downloads = 0
         max_downloads = self.settings.sv.concurrent_direct_downloads
         for download in self.queue:
-            if not isinstance(download, ExternalDownload):
-                if download.state == DownloadState.DOWNLOADING_STATE:
-                    active_downloads += 1
+            if isinstance(download, ExternalDownload):
+                continue
 
-                elif (
-                    download.state == DownloadState.QUEUED_STATE
-                    and active_downloads < max_downloads
-                ):
-                    if download.download_thread is not None:
-                        download.download_thread.start()
-                    active_downloads += 1
+            if download.state == DownloadState.DOWNLOADING_STATE:
+                active_downloads += 1
 
-                if active_downloads >= max_downloads:
-                    break
+            elif (
+                download.state == DownloadState.QUEUED_STATE
+                and active_downloads < max_downloads
+            ):
+                if download.download_thread is not None:
+                    download.download_thread.start()
+                active_downloads += 1
+
+            if active_downloads >= max_downloads:
+                break
 
         return
 
@@ -566,11 +566,11 @@ class DownloadHandler(metaclass=Singleton):
         return
 
     # region Getting
-    def get_all(self) -> List[dict]:
+    def get_all(self) -> List[Dict[str, Any]]:
         """Get all queue entries
 
         Returns:
-            List[dict]: All queue entries, formatted using `Download.as_dict()`.
+            List[Dict[str, Any]]: All queue entries.
         """
         return [e.as_dict() for e in self.queue]
 
@@ -632,7 +632,7 @@ class DownloadHandler(metaclass=Singleton):
             )
         ):
             self.queue.remove(download)
-            PostProcessor.canceled(download)
+            PostProcessor(download).canceled()
             WebSocket().emit(RemovedFromQueueEvent(download))
 
         if blocklist:
@@ -649,17 +649,24 @@ class DownloadHandler(metaclass=Singleton):
 
         return
 
-    def _remove_mega(self, exclude_id: int) -> None:
-        """Remove all Mega downloads from the queue except for the one with
-        the id of `exclude_id`. That one will be handled by the download itself.
+    def _remove_all_of_service(
+        self,
+        download_service: DownloadService,
+        exclude_id: int
+    ) -> None:
+        """Remove all downloads from the queue that are from a given download
+        download service, except for the one with the id of `exclude_id`.
+        That one will be handled by the download itself.
 
         Args:
-            exclude_id (int): The ID of the Mega download to not remove from the
-            queue.
+            download_service (DownloadService): The service of which to remove
+                all downloads in the queue.
+            exclude_id (int): The ID of the download to not remove from the
+                queue.
         """
-        for download in self.queue[::-1]:
+        for download in reversed(self.queue):
             if (
-                isinstance(download, MegaDownload)
+                download.download_service == download_service
                 and download.id != exclude_id
             ):
                 self.remove(download.id)
@@ -667,7 +674,7 @@ class DownloadHandler(metaclass=Singleton):
 
     def remove_all(self) -> None:
         """Remove all downloads from the queue"""
-        for download in self.queue[::-1]:
+        for download in reversed(self.queue):
             self.remove(download.id)
 
         for download in self.queue:
@@ -699,7 +706,8 @@ class DownloadHandler(metaclass=Singleton):
     def empty_download_folder(self) -> None:
         """
         Empty the download folder of files that aren't being downloaded.
-        Handy in the case that a crash left half-downloaded files behind in the folder.
+        Handy in the case that a crash left half-downloaded files behind in the
+        folder.
         """
         LOGGER.info('Emptying the download folder')
         folder = self.settings.sv.download_folder
