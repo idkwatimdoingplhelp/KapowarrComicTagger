@@ -25,6 +25,7 @@ from backend.implementations.volumes import (Issue, Volume,
                                              get_monitored_cv_ids_and_paths,
                                              refresh_and_scan)
 from backend.internals.db import get_db
+from backend.internals.db_backup_import import backup_database
 from backend.internals.server import (Server, TaskAddedEvent, TaskEndedEvent,
                                       TaskStatusEvent, WebSocket)
 
@@ -37,7 +38,8 @@ TASK_INTERVALS = {
     # Note: If there are tasks that should be run at the same time,
     #   but per se after each other, put them in that order in the dict.
     'update_all': '0 * * * *', # every hour at minute 0
-    'search_all': '0 0 * * *' # every day at midnight
+    'search_all': '0 0 * * *', # every day at 00:00
+    'backup_db': '0 0 * * 1' # every Monday at 00:00
 }
 
 
@@ -453,7 +455,7 @@ def delete_task_history() -> None:
 class LibraryTask(Task):
     """
     Tasks that inherit from this class signify that they don't work
-    on one specific volume or issue
+    on one specific volume or issue but on all of them
     """
 
 
@@ -1136,4 +1138,32 @@ class MetaDataAll(Task):
         self.message = f'Finished updating metadata on all volumes'
         WebSocket().emit(TaskStatusEvent(self.message))
 
+        return
+
+
+# region System tasks
+@TaskHandler.register_task("backup_db")
+class BackupDatabase(Task):
+    "Create a backup of the database"
+
+    stop = False
+    message = ''
+    display_title = 'Database Backup'
+
+    @property
+    def volume_id(self) -> None:
+        return None
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self) -> None:
+        return
+
+    def run(self):
+        self.message = 'Creating database backup'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        backup_database()
         return
