@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from asyncio import Semaphore
+from datetime import datetime, timezone
+from time import time
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Tuple, Union
+from urllib.parse import urlparse
 
 from requests import RequestException
 
@@ -17,10 +20,78 @@ if TYPE_CHECKING:
     from backend.base.helpers import AsyncSession
 
 
-class FlareSolverr:
-    cookie_mapping: Dict[str, Dict[str, str]] = {}
+class FSCache:
+    cookie_mapping: Dict[str, Tuple[str, float]] = {}
     ua_mapping: Dict[str, str] = {}
 
+    @staticmethod
+    def _build_cookie(cookie: Dict[str, Any]) -> str:
+        result = f"{cookie['value']}; SameSite={cookie['sameSite']}; Partitioned"
+        if cookie["httpOnly"]:
+            result += "; HttpOnly"
+        if cookie["secure"]:
+            result += "; Secure"
+        if cookie["path"]:
+            result += f"; Path={cookie['path']}"
+        if cookie["domain"]:
+            result += f"; Domain={cookie['domain'].lstrip('.')}"
+        if cookie["expiry"]:
+            timestamp = datetime.fromtimestamp(
+                cookie["expiry"], tz=timezone.utc
+            )
+            result += f"; Expires={timestamp.strftime('%a, %d %b %Y %H:%M:%S GMT')}"
+        return result
+
+    @classmethod
+    def get_ua_cookies(cls, url: str) -> Tuple[str, str]:
+        """Get the user agent and cookies for a certain URL. The UA and cookies
+        can be cleared by CF, so use them to avoid challenges. In case the URL
+        is not CF protected, or hasn't explicitly been cleared yet, then the
+        default UA is returned and no cookie definitions.
+
+        Args:
+            url (str): The URL to get the UA and cookie for.
+
+        Returns:
+            Tuple[str, str]: First element is the UA, or default UA. Second
+                element is the clearance cookie value.
+        """
+        domain = urlparse(url).netloc
+
+        ua = cls.ua_mapping.get(domain, Constants.DEFAULT_USERAGENT)
+        cookie = cls.cookie_mapping.get(domain, ('', 0.0))
+
+        if cookie[0] and time() > cookie[1]:
+            # Expired
+            cls.ua_mapping.pop(domain, None)
+            cls.cookie_mapping.pop(domain, None)
+            ua = Constants.DEFAULT_USERAGENT
+            cookie = ('', 0.0)
+
+        return (ua, cookie[0])
+
+    @classmethod
+    def set_ua_cookies(cls, url: str, fs_response: Dict[str, Any]) -> None:
+        """Cache the user agent and cookies for CF clearance.
+
+        Args:
+            url (str): The URL that the clearance is for.
+            fs_response (Dict[str, Any]): The response from FS.
+        """
+        domain = urlparse(url).netloc
+        for cookie in fs_response["cookies"]:
+            if cookie["name"] == "cf_clearance":
+                cls.ua_mapping[domain] = fs_response["userAgent"]
+                cls.cookie_mapping[domain] = (
+                    cls._build_cookie(cookie),
+                    cookie["expiry"]
+                )
+                break
+
+        return
+
+
+class FlareSolverr:
     def __init__(self) -> None:
         settings = Settings().sv
         self.session_semaphore: Union[Semaphore, None] = None
@@ -103,23 +174,20 @@ class FlareSolverr:
         """
         return self.base_url is not None
 
-    def get_ua_cookies(self, url: str) -> Tuple[str, Dict[str, str]]:
+    def get_ua_cookies(self, url: str) -> Tuple[str, str]:
         """Get the user agent and cookies for a certain URL. The UA and cookies
         can be cleared by CF, so use them to avoid challenges. In case the URL
         is not CF protected, or hasn't explicitly been cleared yet, then the
         default UA is returned and no cookie definitions.
 
         Args:
-            url (str): The URL to get the UA and cookies for.
+            url (str): The URL to get the UA and cookie for.
 
         Returns:
-            Tuple[str, Dict[str, str]]: First element is the UA, or default
-                UA. Second element is a mapping of any extra cookies.
+            Tuple[str, str]: First element is the UA, or default UA. Second
+                element is the clearance cookie value.
         """
-        return (
-            self.ua_mapping.get(url, Constants.DEFAULT_USERAGENT),
-            self.cookie_mapping.get(url, {})
-        )
+        return FSCache.get_ua_cookies(url)
 
     def handle_cf_block(
         self,
@@ -154,51 +222,22 @@ class FlareSolverr:
             return
 
         with Session() as session:
-            # The reason we manually create and close a session for one request
-            # is that it's way faster than making just the request and letting
-            # FS make the temporary session itself. Why it's so much faster to
-            # make a session ourselves compared to FlareSolverr making it for
-            # one request, I don't know. It's orders of magnitude faster.
-
-            # Start session
-            session_id = self.__api_request(
-                self.base_url, session,
-                {
-                    'cmd': 'sessions.create',
-                    **(self.proxy_data or {})
-                }
-            )["session"]
-
-            # Get result
             result = self.__api_request(
                 self.base_url, session,
                 {
                     'cmd': 'request.get',
-                    'session': session_id,
                     'url': url,
-                    'maxTimeout': Constants.FS_RESOLVE_TIMEOUT * 1000
+                    'maxTimeout': Constants.FS_RESOLVE_TIMEOUT * 1000,
+                    **(self.proxy_data or {})
                 }
             )["solution"]
-
-            # Close session
-            self.__api_request(
-                self.base_url, session,
-                {
-                    'cmd': 'sessions.destroy',
-                    'session': session_id
-                }
-            )
 
         if result["response"] is None:
             # FlareSolverr responded, but content of
             # returned webpage is empty.
             return
 
-        self.ua_mapping[url] = result["userAgent"]
-        self.cookie_mapping[url] = {
-            cookie["name"]: cookie["value"]
-            for cookie in result["cookies"]
-        }
+        FSCache.set_ua_cookies(url, result)
 
         return result
 
@@ -237,55 +276,29 @@ class FlareSolverr:
             return
 
         # Technically this makes it a max amount of FS sessions per AsyncSession
-        # instance. Luckily, for the most intense request scenario of searching
-        # for downloads, just one session is used so that works out. We just
-        # need to refactor the FlareSolverr implementation to stand more as a
-        # separate entity from the Session and AsyncSession classes so that we
-        # can regulate session count and session instances better.
+        # instance, but in most cases the application only has one AsyncSession
+        # running at any point in time.
         if self.session_semaphore is None:
             self.session_semaphore = Semaphore(
                 Constants.MAX_CONCURRENT_FS_SESSIONS
             )
 
-        # Start session
         async with self.session_semaphore:
-            session_id = (await self.__async_api_request(
-                self.base_url, session,
-                {
-                    'cmd': 'sessions.create',
-                    **(self.proxy_data or {})
-                }
-            ))["session"]
-
-            # Get result
             result = (await self.__async_api_request(
                 self.base_url, session,
                 {
                     'cmd': 'request.get',
-                    'session': session_id,
                     'url': url,
-                    'maxTimeout': Constants.FS_RESOLVE_TIMEOUT * 1000
+                    'maxTimeout': Constants.FS_RESOLVE_TIMEOUT * 1000,
+                    **(self.proxy_data or {})
                 }
             ))["solution"]
-
-            # Close session
-            await self.__async_api_request(
-                self.base_url, session,
-                {
-                    'cmd': 'sessions.destroy',
-                    'session': session_id
-                }
-            )
 
         if result["response"] is None:
             # FlareSolverr responded, but content of
             # returned webpage is empty.
             return
 
-        self.ua_mapping[url] = result["userAgent"]
-        self.cookie_mapping[url] = {
-            cookie["name"]: cookie["value"]
-            for cookie in result["cookies"]
-        }
+        FSCache.set_ua_cookies(url, result)
 
         return result

@@ -11,7 +11,7 @@ from datetime import datetime
 from enum import Enum
 from threading import Event, Thread
 from typing import (TYPE_CHECKING, Any, Callable, Dict, List,
-                    Mapping, Tuple, Type, TypedDict, TypeVar, Union)
+                    Mapping, Tuple, TypedDict, TypeVar, Union)
 
 if TYPE_CHECKING:
     from threading import Timer
@@ -313,7 +313,7 @@ class InvalidDatabaseReason(BaseEnum):
 
     VERSION_NOT_SUPPORTED = "version_not_supported"
     """
-    Uploaded database is higher version than this Kapowarr installation can\
+    Uploaded database is higher version than this Kapowarr installation can
     support
     """
 
@@ -517,7 +517,16 @@ class IndexerClientField(BaseEnum):
 
     # GC
     GC_SERVICE_PREFERENCE = "gc_service_preference"
+    """
+    Only applicable for the GC client. The preference order for download
+    services offered on a GC download page.
+    """
+
     GC_AVOID_LARGE_DOWNLOADS = "gc_avoid_large_downloads"
+    """
+    Only applicable for the GC client. Whether to avoid downloads if they're
+    over 400MB.
+    """
 
 
 class SearchAction(BaseEnum):
@@ -1232,14 +1241,13 @@ class IndexerClient(ABC):
 
     @classmethod
     @abstractmethod
-    def test(
-        cls,
-        url: str
-    ) -> None:
+    def test(cls, url: str, **extra_fields: Any) -> None:
         """Check if an indexer is working.
 
         Args:
             url (str): The url on which the indexer is available.
+            extra_fields (kwargs, optional): Extra fields and their values,
+                possibly used by the indexer during testing.
 
         Raises:
             ClientNotWorking: Can't connect to client.

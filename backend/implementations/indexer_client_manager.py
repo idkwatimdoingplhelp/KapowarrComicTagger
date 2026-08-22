@@ -26,15 +26,17 @@ ICF = IndexerClientField
 
 def _validate_indexer_data(
     data: Mapping[str, Any],
-    required_tokens: Tuple[IndexerClientField, ...]
+    required_tokens: Tuple[IndexerClientField, ...],
+    enforce_existence: bool = True
 ) -> Dict[str, Any]:
     filtered_data: Dict[str, Any] = {}
-    for key in ICF._member_map_.values():
-        if key not in required_tokens:
-            continue
-
+    for key in required_tokens:
         if key.value not in data:
-            raise KeyNotFound(key.value)
+            if enforce_existence:
+                raise KeyNotFound(key.value)
+            else:
+                filtered_data[key.value] = None
+                continue
 
         value = data[key.value]
 
@@ -159,7 +161,7 @@ class BaseIndexerClient(IndexerClient):
         filtered_data = _validate_indexer_data(data, self.required_tokens)
 
         # Raises exception on fail
-        self.test(filtered_data[ICF.URL.value])
+        self.test(**filtered_data)
 
         get_db().execute("""
             UPDATE indexer_clients
@@ -292,7 +294,8 @@ class IndexerClients:
         cls,
         download_type: DownloadType,
         client_type: str,
-        url: str
+        url: str,
+        **extra_fields: Any
     ) -> ClientTestResult:
         """Test whether an indexer client is supported, working and available.
 
@@ -304,6 +307,9 @@ class IndexerClients:
                 they registered to this class.
 
             url (str): The url on which the indexer is available.
+
+            extra_fields (kwargs, optional): Extra fields and their values,
+                possibly used by the indexer during testing.
 
         Raises:
             InvalidKeyValue: One of the parameters has an invalid argument.
@@ -317,10 +323,18 @@ class IndexerClients:
             raise InvalidKeyValue('download_type', download_type)
 
         try:
-            type_clients[client_type].test(normalise_base_url(url))
-
+            ClientClass = type_clients[client_type]
         except KeyError:
             raise InvalidKeyValue('client_type', client_type)
+
+        filtered_data = _validate_indexer_data(
+            {'url': url, **extra_fields},
+            ClientClass.required_tokens,
+            enforce_existence=False
+        )
+
+        try:
+            ClientClass.test(**filtered_data)
 
         except ClientNotWorking as e:
             return ClientTestResult({
@@ -348,8 +362,7 @@ class IndexerClients:
         enabled: bool,
         title: str,
         url: str,
-        gc_service_preference: Union[CommaList, None],
-        gc_avoid_large_downloads: Union[bool, None]
+        **extra_fields: Any
     ) -> IndexerClient:
         """Add an indexer client.
 
@@ -366,12 +379,8 @@ class IndexerClients:
 
             url (str): The url on which the indexer is available.
 
-            gc_service_preference (Union[CommaList, None]): Only applicable for
-                the GC client. The preference order for download services
-                offered on a GC download page.
-
-            gc_avoid_large_downloads (Union[bool, None]): Only applicable for
-                the GC client. Whether to avoid downloads if they're over 400MB.
+            extra_fields (kwargs, optional): Extra fields and their values,
+                possibly used by the indexer.
 
         Raises:
             InvalidKeyValue: One of the parameters has an invalid argument.
@@ -411,8 +420,7 @@ class IndexerClients:
             'enabled': enabled,
             'title': title,
             'url': url,
-            'gc_service_preference': gc_service_preference,
-            'gc_avoid_large_downloads': gc_avoid_large_downloads
+            **extra_fields
         }
         LOGGER.info(
             f"Adding indexer: {download_type=}, {client_type=}, {data=}"
@@ -423,8 +431,15 @@ class IndexerClients:
         )
 
         # Raises exception on fail
-        ClientClass.test(filtered_data["url"])
+        ClientClass.test(**filtered_data)
 
+        filtered_data = {
+            key: filtered_data.get(key)
+            for key in (
+                'download_type', 'client_type',
+                *ICF._value2member_map_
+            )
+        }
         filtered_data.update({
             'download_type': ClientClass.download_type.value,
             'client_type': client_type
@@ -455,43 +470,21 @@ class IndexerClients:
         Returns:
             List[IndexerClientData]: The list of all data of the indexer clients.
         """
-        cursor = get_db()
-        cursor.execute("""
-            SELECT
-                id, enabled,
-                download_type, client_type,
-                title, url,
-                gc_service_preference, gc_avoid_large_downloads
+        clients = get_db().execute("""
+            SELECT id, download_type, client_type
             FROM indexer_clients
             ORDER BY title, id;
-        """)
+        """).fetchall()
 
         result: List[IndexerClientData] = []
-        for client in cursor:
+        for client in clients:
             ClientClass = (cls
                 .clients[DownloadType(client["download_type"])]
                 [client["client_type"]]
             )
-            if client["gc_service_preference"] is not None:
-                gc_service_preference = CommaList(
-                    client["gc_service_preference"])
-            else:
-                gc_service_preference = None
-
-            result.append({
-                "id": client["id"],
-                "enabled": client["enabled"],
-                "download_type": client["download_type"],
-                "client_type": client["client_type"],
-                "required_tokens": [
-                    t.value
-                    for t in ClientClass.required_tokens
-                ],
-                "title": client["title"],
-                "url": client["url"],
-                "gc_service_preference": gc_service_preference,
-                "gc_avoid_large_downloads": client["gc_avoid_large_downloads"]
-            })
+            result.append(
+                ClientClass(client["id"]).get_indexer_data()
+            )
 
         return result
 
