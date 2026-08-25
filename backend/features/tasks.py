@@ -18,7 +18,8 @@ from backend.base.definitions import QueuedTaskData, Task
 from backend.base.helpers import Singleton, get_schedules_next_run
 from backend.base.logging import LOGGER
 from backend.features.download_queue import DownloadHandler
-from backend.features.search import auto_search
+from backend.features.search_discover import discover_downloads
+from backend.features.search_full import auto_search
 from backend.implementations.conversion import mass_convert
 from backend.implementations.naming import mass_rename
 from backend.implementations.volumes import (Issue, Volume,
@@ -39,7 +40,8 @@ TASK_INTERVALS = {
     #   but per se after each other, put them in that order in the dict.
     'update_all': '0 * * * *', # every hour at minute 0
     'search_all': '0 0 * * *', # every day at 00:00
-    'backup_db': '0 0 * * 1' # every Monday at 00:00
+    'backup_db': '0 0 * * 1', # every Monday at 00:00
+    'rss_sync': '0,30 * * * *' # every half hour
 }
 
 
@@ -1168,3 +1170,35 @@ class BackupDatabase(Task):
 
         backup_database()
         return
+
+
+@TaskHandler.register_task('rss_sync')
+class RssSync(DownloadTask):
+    "Do an RSS sync"
+
+    stop = False
+    message = ''
+    display_title = 'RSS Sync'
+
+    @property
+    def volume_id(self) -> None:
+        return None
+
+    @property
+    def issue_id(self) -> None:
+        return None
+
+    def __init__(self) -> None:
+        return
+
+    def run(self):
+        self.message = 'Performing RSS Sync'
+        WebSocket().emit(TaskStatusEvent(self.message))
+
+        results = discover_downloads()
+        downloads: List[Tuple[str, int, int, Union[int, None]]] = [
+            (download['link'], download["indexer_id"], volume_id, None)
+            for volume_id, downloads in results.items()
+            for download in downloads
+        ]
+        return downloads
