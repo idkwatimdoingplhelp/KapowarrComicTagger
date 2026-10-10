@@ -1606,7 +1606,7 @@ def refresh_and_scan(
                     pool.istarmap_unordered(scan_files, v_ids)
                 ):
                     ws.emit(TaskStatusEvent(
-                        f'Scanned files for volume {idx+1}/{total_count}'
+                        f'Scanned files for volume {idx + 1}/{total_count}'
                     ))
 
             else:
@@ -1683,6 +1683,6 @@ def get_monitored_cv_ids_and_paths() -> List[Tuple[int, str]]:
             ON i.id = if.issue_id
         INNER JOIN files f
             ON if.file_id = f.id
-        WHERE i.monitored = 1;
+        WHERE i.date >= date('now', '-1 month') AND i.date <= date('now');
         """
     ).fetchall()
