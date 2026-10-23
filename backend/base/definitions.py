@@ -10,8 +10,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import Enum
 from threading import Event, Thread
-from typing import (TYPE_CHECKING, Any, Callable, Dict, List,
-                    Mapping, Tuple, TypedDict, TypeVar, Union)
+from typing import (TYPE_CHECKING, Any, Callable, Dict, List, Mapping,
+                    Sequence, Tuple, TypedDict, TypeVar, Union)
 
 if TYPE_CHECKING:
     from threading import Timer
@@ -528,6 +528,14 @@ class IndexerClientField(BaseEnum):
     over 400MB.
     """
 
+    # Torrent/Usenet
+    API_PATH = "api_path"
+    "Path to the api, usually /api"
+
+    API_KEY = "api_key"
+
+    CATEGORIES = "categories"
+
 
 class SearchAction(BaseEnum):
     "The next course of action during a search with an indexer"
@@ -580,11 +588,6 @@ service on the GC page
 # autopep8: on
 
 
-# Future proofing. In the future, there'll be services like 'torrent' and
-# 'usenet'. In part of the code, we want access to all download services,
-# and in the other part we only want the GC services. So in preparation
-# of the torrent and usenet services coming, we're already making the
-# distinction here.
 class DownloadService(BaseEnum):
     "All possible download services/protocols"
 
@@ -596,6 +599,8 @@ class DownloadService(BaseEnum):
     "A DDL download link straight from their own servers"
     GETCOMICS_TORRENT = "GetComics (torrent)"
     "A torrent magnet link directly on the webpage"
+
+    TORRENT = "Torrent"
 
 
 class DownloadClientIdentifier(BaseEnum):
@@ -688,6 +693,9 @@ class IndexerClientData(TypedDict):
     url: str
     gc_service_preference: Union['CommaList', None]
     gc_avoid_large_downloads: Union[bool, None]
+    api_path: Union[str, None]
+    api_key: Union[str, None]
+    categories: Union['CommaList', None]
 
 
 class SearchQuery(TypedDict):
@@ -702,6 +710,8 @@ class SearchResultData(FilenameData):
     size: int
     indexer_id: int
     indexer_title: str
+    seeders: Union[int, None]
+    leechers: Union[int, None]
 
 
 class SearchResultMatchData(TypedDict):
@@ -1133,14 +1143,16 @@ class Task(ABC):
         ...
 
     @abstractmethod
-    def run(self) -> Union[None, List[Tuple[str, int, int, Union[int, None]]]]:
+    def run(self) -> Union[None, List[Tuple[
+        str, int, FilenameData, int, Union[int, None]
+    ]]]:
         """Run the task
 
         Returns:
             Union[None, List[Tuple[str, int, Union[int, None]]]]:
                 Either `None` if the task has no result or
-                `List[Tuple[str, int, Union[int, None]]]` if the task returns
-                search results.
+                `List[Tuple[str, int, FilenameData, int, Union[int, None]]]` if
+                the task returns search results.
         """
         ...
 
@@ -1305,6 +1317,19 @@ class QueryBuilder(ABC):
         return
 
     @abstractmethod
+    def _select_queries(self, query_keys: QueryKeys) -> Sequence[str]:
+        """Determine the set of possible queries that should be used for this
+        iteration. For example, different query formats can be used based on
+        whether a search for an issue or for a volume is done.
+
+        Args:
+            query_keys (QueryKeys): The query keys that are used this iteration.
+
+        Returns:
+            Sequence[str]: The set of query formats that can be used.
+        """
+        ...
+
     def next_query(
         self,
         search_action: SearchAction,
@@ -1322,7 +1347,31 @@ class QueryBuilder(ABC):
         Returns:
             SearchQuery: The resulting query string and which page to fetch.
         """
-        ...
+        self._update_state(search_action)
+
+        queries = self._select_queries(query_keys)
+        query = queries[self.query_variation_index]
+
+        if query_keys.year is None:
+            query = query.replace('({year})', '').strip()
+
+        if query_keys.issue_number is None:
+            year = query_keys.year
+        else:
+            year = query_keys.issue_year or query_keys.year
+
+        result = query.format(
+            title=query_keys.titles[self.alias_index],
+            year=year,
+            volume_number=query_keys.volume_number,
+            issue_number=query_keys.issue_number
+        )
+
+        return {
+            "query": result,
+            "page": self.page,
+            "total_available_variations": len(queries)
+        }
 
 
 class ExternalDownloadClient(ABC):
@@ -1526,6 +1575,7 @@ class DownloadPrepper(ABC):
         self,
         link: str,
         indexer_id: int,
+        title_data: FilenameData,
         volume_id: int,
         issue_id: Union[int, None] = None,
         force_match: bool = False
@@ -1536,6 +1586,8 @@ class DownloadPrepper(ABC):
             link (str): A link to download from.
 
             indexer_id (int): The ID of the indexer that the link came from.
+
+            title_data (FilenameData): The filename data of the title.
 
             volume_id (int): The ID of the volume for which the download is
                 intended.

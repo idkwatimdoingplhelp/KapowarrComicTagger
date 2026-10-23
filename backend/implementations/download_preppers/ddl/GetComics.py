@@ -21,7 +21,8 @@ from backend.base.definitions import (GC_DOWNLOAD_SERVICE_TERMS,
                                       DownloadPrepper, DownloadService,
                                       DownloadType,
                                       EnqueuingDownloadFailureReason,
-                                      GCDownloadService, SpecialVersion)
+                                      FilenameData, GCDownloadService,
+                                      SpecialVersion)
 from backend.base.file_extraction import (extract_filename_data,
                                           refine_special_version)
 from backend.base.helpers import (AsyncSession, Session, build_magnet_link,
@@ -423,6 +424,7 @@ class GetComicsPrepper(DownloadPrepper):
         self,
         link: str,
         indexer_id: int,
+        title_data: FilenameData,
         volume_id: int,
         issue_id: Union[int, None] = None,
         force_match: bool = False
@@ -602,10 +604,6 @@ class GetComicsPrepper(DownloadPrepper):
         Args:
             group (DownloadGroup): The download group to convert.
 
-            web_link (str): The link to the web page.
-
-            web_title (Union[str, None]): The title of the GC article.
-
         Returns:
             Tuple[Union[Download, None], bool]: If successful, the download and
                 `False`. If unsuccessful, `None` and whether it failed because
@@ -689,10 +687,6 @@ class GetComicsPrepper(DownloadPrepper):
 
         Args:
             link_paths (List[List[DownloadGroup]]): The link paths.
-
-            web_link (str): The link to the GC article.
-
-            web_title (Union[str, None]): The title of the GC article.
 
         Raises:
             EnqueuingDownloadFailure: Failed to extract downloads because no links
