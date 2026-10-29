@@ -709,10 +709,16 @@ class Volume:
             new_root_folder
         )
         for old_name, new_name in file_changes.items():
+            if not exists(old_name):
+                # File doesn't exist anymore. Maybe it got deleted with no R&S
+                # or it's already at the destination.
+                continue
+
             rename_file(
                 old_name,
                 new_name
             )
+
         if isdir(volume_data.folder):
             delete_empty_child_folders(volume_data.folder)
 
@@ -1116,10 +1122,11 @@ class Library:
         Raises:
             RootFolderNotFound: The root folder with the given ID was not found.
             VolumeAlreadyAdded: The volume already exists in the library.
-            InvalidKeyValue: The API key of the metadata source is invalid.
-            VolumeNotMatched: The ID doesn't map to any volume.
+            CredentialInvalid: The API key of the metadata source is invalid.
+            MetadataSourceDataEntryNotFound: The ID doesn't map to any volume.
             MetadataSourceRateLimitReached: The metadata source rate limit is
                 reached.
+            MetadataSourceNotWorking: Something went wrong contacting CV.
 
         Returns:
             int: The ID of the new volume.
@@ -1377,7 +1384,8 @@ def refresh_and_scan(
             Defaults to True.
 
     Raises:
-        InvalidKeyValue: The API key of the metadata source is invalid.
+        CredentialInvalid: The API key of the metadata source is invalid.
+        MetadataSourceNotWorking: Something went wrong contacting CV.
     """
     current_time = datetime.now()
     one_day_ago = current_time - ONE_DAY

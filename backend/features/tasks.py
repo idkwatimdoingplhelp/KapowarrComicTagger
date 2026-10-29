@@ -12,7 +12,8 @@ from comictaggerlib import settings
 from comictaggerlib.cli import cli_mode as cli
 
 import backend.internals.settings as settings_module
-from backend.base.custom_exceptions import (InvalidKeyValue,
+from backend.base.custom_exceptions import (CredentialInvalid, InvalidKeyValue,
+                                            MetadataSourceNotWorking,
                                             TaskNotDeletable, TaskNotFound)
 from backend.base.definitions import FilenameData, QueuedTaskData, Task
 from backend.base.helpers import Singleton, get_schedules_next_run
@@ -810,8 +811,7 @@ class RefreshAndScanVolume(Task):
 
         try:
             refresh_and_scan(self._volume_id, update_websocket=True)
-        except InvalidKeyValue:
-            # API key invalid
+        except (CredentialInvalid, MetadataSourceNotWorking):
             pass
 
         return
@@ -1044,6 +1044,10 @@ class UpdateAll(LibraryTask):
         except InvalidKeyValue:
             # API key invalid
             pass
+
+        LOGGER.info(f'Finished adding metadata to all volumes')
+        self.message = f'Finished updating metadata on all volumes'
+        WebSocket().emit(TaskStatusEvent(self.message))
 
         return
 
